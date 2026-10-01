@@ -12,6 +12,11 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH "/opt/unitree_robotics/lib/cmake")
 find_package(unitree_sdk2 REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(OpenGL REQUIRED)
 
 
 include_directories(
@@ -32,6 +37,30 @@ file(GLOB SIM_SRC
   src/lodepng/lodepng.cpp
 )
 
+add_library(xchallenge_realsense_camera STATIC
+  src/realsense/realsense_camera_bridge.cpp
+  src/realsense/mujoco_rgbd_renderer.cpp
+  src/realsense/ros_camera_publisher.cpp
+)
+
+target_include_directories(xchallenge_realsense_camera
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/mujoco/include
+)
+
+target_link_libraries(xchallenge_realsense_camera  
+  mujoco
+  glfw
+  OpenGL::GL
+)
+
+ament_target_dependencies(xchallenge_realsense_camera
+  rclcpp
+  sensor_msgs
+  builtin_interfaces
+)
+
 link_libraries(
   pthread
   mujoco
@@ -43,5 +72,7 @@ link_libraries(
 )
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+
+target_link_libraries(unitree_mujoco PRIVATE xchallenge_realsense_camera)
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

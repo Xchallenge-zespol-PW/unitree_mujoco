@@ -38,8 +38,9 @@ public:
         }
 
     }
-
+    virtual ~UnitreeSDK2BridgeBase() = default;
     virtual void start() {}
+    virtual void stop() {}
 
     void printSceneInformation()
     {
@@ -165,10 +166,19 @@ public:
         wireless_controller->joystick = joystick;
     }
 
-    void start()
+    ~RobotBridge() override
     {
-        thread_ = std::make_shared<unitree::common::RecurrentThread>(
-            "unitree_bridge", UT_CPU_ID_NONE, 1000, [this]() { this->run(); });
+        stop();
+    }
+
+    void start() override
+    {
+        thread_ = std::make_shared<unitree::common::RecurrentThread>("unitree_bridge", UT_CPU_ID_NONE, 1000, [this]() { this->run(); });
+    }
+
+    void stop() override
+    {
+        thread_.reset();
     }
 
     virtual void run()
@@ -273,6 +283,11 @@ public:
         bmsstate->msg_.soc() = 100;
 
         secondary_imustate = std::make_unique<IMUState_t>("rt/secondary_imu");
+    }
+
+    ~G1Bridge() override
+    {
+        stop();
     }
 
     void run() override

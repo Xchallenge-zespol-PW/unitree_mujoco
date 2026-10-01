@@ -28,15 +28,12 @@
 #include <new>
 #include <string>
 #include <thread>
-#include <rclcpp/rclcpp.hpp>
 
 #include <mujoco/mujoco.h>
 #include "simulate.h"
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
-#include "realsense_camera_bridge.hpp"
-#include "realsense_camera_bridge.hpp"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -538,7 +535,7 @@ namespace
 
 //-------------------------------------- physics_thread --------------------------------------------
 
-void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge)
+void PhysicsThread(mj::Simulate *sim, const char *filename)
 {
   // request loadmodel if file given (otherwise drag-and-drop)
   if (filename != nullptr)
@@ -552,10 +549,6 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
       sim->Load(m, d, filename);
       mj_forward(m, d);
 
-      if (camera_bridge != nullptr) {
-        camera_bridge->Bind(m, d, &sim->mtx);
-      }
-
       // allocate ctrlnoise
       free(ctrlnoise);
       ctrlnoise = static_cast<mjtNum *>(malloc(sizeof(mjtNum) * m->nu));
@@ -568,33 +561,32 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
   }
 
   PhysicsLoop(*sim);
+
+  // delete everything we allocated
+  free(ctrlnoise);
+  mj_deleteData(d);
+  mj_deleteModel(m);
+
+  exit(0);
 }
 
 void *UnitreeSdk2BridgeThread(void *arg)
 {
-  auto* sim = static_cast<mj::Simulate*>(arg);
-
-  if (sim == nullptr) {
-      return nullptr;
-  }
-
-  while (!sim->exitrequest.load()) {
-      if (m != nullptr && d != nullptr) {
-          std::cout << "Mujoco data is prepared" << std::endl;
-          break;
-      }
-
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-
-  if (sim->exitrequest.load()) {
-      return nullptr;
+  // Wait for mujoco data
+  while (true)
+  {
+    if (d)
+    {
+      std::cout << "Mujoco data is prepared" << std::endl;
+      break;
+    }
+    usleep(500000);
   }
 
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
 
-  int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
 
+  int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
   if (body_id < 0) {
     body_id = mj_name2id(m, mjOBJ_BODY, "base_link");
   }
@@ -606,8 +598,7 @@ void *UnitreeSdk2BridgeThread(void *arg)
     idl_type = param::ResolveIdlType(param::config.robot, m->nu, param::config.idl_type);
   } catch (const std::invalid_argument& error) {
     std::cerr << error.what() << std::endl;
-    sim->exitrequest.store(1);
-    return nullptr;
+    std::exit(EXIT_FAILURE);
   }
 
   if (idl_type == param::IDL_HG) {
@@ -619,21 +610,10 @@ void *UnitreeSdk2BridgeThread(void *arg)
   }
   interface->start();
   
-  while (!sim->exitrequest.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-  std::cerr << "[Shutdown] Stopping Unitree bridge..." << std::endl;
-
-  interface->stop();
-
-  std::cerr << "[Shutdown] Unitree recurrent thread stopped." << std::endl;
-
-  interface.reset();
-
-  std::cerr << "[Shutdown] Unitree bridge destroyed." << std::endl;
-
-  return nullptr;
+  while (true)
+  {
+    sleep(1);
+  }
 }
 //------------------------------------------ main --------------------------------------------------
 
@@ -707,95 +687,20 @@ int main(int argc, char **argv)
     param::config.robot_scene = proj_dir.parent_path() / "unitree_robots" / param::config.robot / param::config.robot_scene;
   }
 
-  rclcpp::init(argc, argv);
-  auto camera_ros_node = std::make_shared<rclcpp::Node>("xchallenge_realsense_camera");
-
   // simulate object encapsulates the UI
   auto sim = std::make_unique<mj::Simulate>(
     std::make_unique<mj::GlfwAdapter>(),
     &cam, &opt, &pert, /* is_passive = */ false);
 
-  std::thread unitree_thread(UnitreeSdk2BridgeThread, sim.get());
-
-  xchallenge::RealSenseCameraBridge camera_bridge("d435i_color", "d435i_depth", 320, 240, 30, camera_ros_node);  
-  
-  if (!camera_bridge.Start()) {
-    std::cerr << "[main] Failed to start RealSense camera bridge." << std::endl;
-    return 1;
-  }
-
-  std::thread ros_shutdown_thread([&sim]() {
-      while (rclcpp::ok() && !sim->exitrequest.load()) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(20));
-      }
-
-      if (!rclcpp::ok()) {
-          sim->exitrequest.store(1);
-      }
-  });
+  std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
 
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge);
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
   // start simulation UI loop (blocking call)
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);
-  
-  std::cout << "[ROS] rclcpp::ok() before RenderLoop = " << std::boolalpha << rclcpp::ok() << std::endl;
   sim->RenderLoop();
-  std::cerr << "[Shutdown] RenderLoop returned." << std::endl;
+  physicsthreadhandle.join();
 
-  sim->exitrequest.store(1);
-
-  camera_bridge.Stop();
-  std::cerr << "[Shutdown] Camera bridge stopped." << std::endl;
-
-  if (physicsthreadhandle.joinable()) {
-    physicsthreadhandle.join();
-  }
-
-  if (unitree_thread.joinable()) {
-    unitree_thread.join();
-  }
-
-  if (ros_shutdown_thread.joinable()) {
-    ros_shutdown_thread.join();
-  }
-
-  std::cerr << "[Shutdown] Physics thread joined." << std::endl;
-  std::cerr << "[Shutdown] Unitree thread joined." << std::endl;
-  std::cerr << "[Shutdown] ROS shutdown thread joined." << std::endl;
-
-  std::cerr << "[Shutdown] Unbinding camera bridge..." << std::endl;
-  camera_bridge.Unbind();
-  std::cerr << "[Shutdown] Camera bridge unbound." << std::endl;
-
-  std::cerr << "[Shutdown] Destroying ROS camera node..." << std::endl;
-  camera_ros_node.reset();
-  std::cerr << "[Shutdown] ROS camera node destroyed." << std::endl;
-
-  if (rclcpp::ok()) {
-      rclcpp::shutdown();
-  }
-
-  std::cerr << "[Shutdown] Destroying Simulate..." << std::endl;
-  sim.reset();
-  std::cerr << "[Shutdown] Simulate destroyed." << std::endl;
-
-  std::cerr << "[Shutdown] Freeing control noise..." << std::endl;
-  free(ctrlnoise);
-  ctrlnoise = nullptr;
-  std::cerr << "[Shutdown] Control noise freed." << std::endl;
-
-  std::cerr << "[Shutdown] Deleting mjData..." << std::endl;
-  mj_deleteData(d);
-  d = nullptr;
-  std::cerr << "[Shutdown] mjData deleted." << std::endl;
-
-  std::cerr << "[Shutdown] Deleting mjModel..." << std::endl;
-  mj_deleteModel(m);
-  m = nullptr;
-  std::cerr << "[Shutdown] mjModel deleted." << std::endl;
-
-  std::cerr << "[Shutdown] Clean exit." << std::endl;
-
+  pthread_exit(NULL);
   return 0;
 }

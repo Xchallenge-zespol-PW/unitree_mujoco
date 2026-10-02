@@ -1,0 +1,21 @@
+<mujoco model="g1_lidar_smoke">
+  <include file="g1_29dof.xml"/>
+
+  <!-- Deterministic LiDAR smoke-test scene: keep the robot in its initial pose. -->
+  <option gravity="0 0 0"/>
+  <statistic center="0 0 1.0" extent="4.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <geom name="lidar_smoke_floor" type="plane" size="0 0 0.05" rgba="0.25 0.25 0.25 1"/>
+    <geom name="lidar_smoke_front" type="box" pos="2.0 0 1.2" size="0.05 1.0 1.2" rgba="0.8 0.2 0.2 1"/>
+    <geom name="lidar_smoke_left" type="box" pos="0 2.0 1.2" size="1.0 0.05 1.2" rgba="0.2 0.8 0.2 1"/>
+    <geom name="lidar_smoke_right" type="box" pos="0 -2.0 1.2" size="1.0 0.05 1.2" rgba="0.2 0.2 0.8 1"/>
+    <geom name="lidar_smoke_rear" type="box" pos="-2.0 0 1.2" size="0.05 1.0 1.2" rgba="0.8 0.8 0.2 1"/>
+  </worldbody>
+</mujoco>

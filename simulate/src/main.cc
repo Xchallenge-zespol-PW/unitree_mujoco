@@ -36,7 +36,8 @@
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
 #include "realsense_camera_bridge.hpp"
-#include "realsense_camera_bridge.hpp"
+#include "mujoco_lidar3d.hpp"
+#include "ros_lidar_publisher.hpp"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -101,6 +102,7 @@ namespace
   // model and data
   mjModel *m = nullptr;
   mjData *d = nullptr;
+  std::recursive_mutex* keyboard_simulation_mutex = nullptr;
 
   // control noise variables
   mjtNum *ctrlnoise = nullptr;
@@ -327,7 +329,7 @@ namespace
   }
 
   // simulate in background thread (while rendering in main thread)
-  void PhysicsLoop(mj::Simulate &sim)
+  void PhysicsLoop(mj::Simulate &sim, xchallenge::MujocoLidar3d* lidar, xchallenge::RosLidarPublisher* lidar_publisher)
   {
     // cpu-sim syncronization point
     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
@@ -339,65 +341,12 @@ namespace
     // run until asked to exit
     while (!sim.exitrequest.load())
     {
-      if (sim.droploadrequest.load())
-      {
-        sim.LoadMessage(sim.dropfilename);
-        mjModel *mnew = LoadModel(sim.dropfilename, sim);
-        sim.droploadrequest.store(false);
-
-        mjData *dnew = nullptr;
-        if (mnew)
-          dnew = mj_makeData(mnew);
-        if (dnew)
-        {
-          sim.Load(mnew, dnew, sim.dropfilename);
-
-          mj_deleteData(d);
-          mj_deleteModel(m);
-
-          m = mnew;
-          d = dnew;
-          mj_forward(m, d);
-
-          // allocate ctrlnoise
-          free(ctrlnoise);
-          ctrlnoise = (mjtNum *)malloc(sizeof(mjtNum) * m->nu);
-          mju_zero(ctrlnoise, m->nu);
-        }
-        else
-        {
-          sim.LoadMessageClear();
-        }
-      }
-
-      if (sim.uiloadrequest.load())
-      {
-        sim.uiloadrequest.fetch_sub(1);
-        sim.LoadMessage(sim.filename);
-        mjModel *mnew = LoadModel(sim.filename, sim);
-        mjData *dnew = nullptr;
-        if (mnew)
-          dnew = mj_makeData(mnew);
-        if (dnew)
-        {
-          sim.Load(mnew, dnew, sim.filename);
-
-          mj_deleteData(d);
-          mj_deleteModel(m);
-
-          m = mnew;
-          d = dnew;
-          mj_forward(m, d);
-
-          // allocate ctrlnoise
-          free(ctrlnoise);
-          ctrlnoise = static_cast<mjtNum *>(malloc(sizeof(mjtNum) * m->nu));
-          mju_zero(ctrlnoise, m->nu);
-        }
-        else
-        {
-          sim.LoadMessageClear();
-        }
+      // Camera and DDS borrow model/data: reloading would invalidate their pointers.
+      const bool dropped_model = sim.droploadrequest.exchange(false);
+      const int requested_reload = sim.uiloadrequest.exchange(0);
+      if (dropped_model || requested_reload != 0) {
+        std::cerr << "[Model] Live reload disabled while bridges borrow mjModel/mjData. Restart to load a scene." << std::endl;
+        sim.LoadMessageClear();
       }
 
       // sleep for 1 ms or yield, to let main thread run
@@ -410,6 +359,8 @@ namespace
       {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
+
+      bool lidar_frame_ready = false;
 
       {
         // lock the sim mutex
@@ -530,16 +481,44 @@ namespace
             mj_forward(m, d);
             sim.speed_changed = true;
           }
+
+          if (lidar != nullptr && lidar_publisher != nullptr && d != nullptr)
+          {
+            try
+            {
+              lidar_frame_ready = lidar->CaptureIfDue(d);
+            }
+            catch (const std::exception& error)
+            {
+              std::cerr << "[LiDAR] Capture failed: " << error.what() << std::endl;
+              sim.exitrequest.store(1);
+            }
+          }
         }
-      } // release std::lock_guard<std::mutex>
+      } // release simulation mutex
+
+      if (lidar_frame_ready && lidar != nullptr && lidar_publisher != nullptr)
+      {
+        try
+        {
+          lidar_publisher->Publish(lidar->Frame());
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[LiDAR] Publish failed: " << error.what() << std::endl;
+          sim.exitrequest.store(1);
+        }
+      }
     }
   }
 } // namespace
 
 //-------------------------------------- physics_thread --------------------------------------------
 
-void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge)
+void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge, xchallenge::Lidar3dConfig lidar_config, xchallenge::RosLidarPublisher* lidar_publisher)
 {
+  std::unique_ptr<xchallenge::MujocoLidar3d> lidar;
+
   // request loadmodel if file given (otherwise drag-and-drop)
   if (filename != nullptr)
   {
@@ -551,6 +530,29 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
     {
       sim->Load(m, d, filename);
       mj_forward(m, d);
+
+      if (lidar_config.enabled)
+      {
+        if (lidar_publisher == nullptr)
+        {
+          std::cerr << "[LiDAR] Enabled, but ROS publisher is not available." << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+
+        try
+        {
+          lidar = std::make_unique<xchallenge::MujocoLidar3d>(m, lidar_config);
+          std::cout << "[LiDAR] Bound to site '" << lidar_config.site_name << "', topic '" << lidar_config.topic << "', "
+                    << lidar_config.horizontal_samples << "x" << lidar_config.vertical_samples << " @ " << lidar_config.rate_hz << " Hz." << std::endl;
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[LiDAR] Initialization failed: " << error.what() << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+      }
 
       if (camera_bridge != nullptr) {
         camera_bridge->Bind(m, d, &sim->mtx);
@@ -567,7 +569,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
     }
   }
 
-  PhysicsLoop(*sim);
+  PhysicsLoop(*sim, lidar.get(), lidar_publisher);
 }
 
 void *UnitreeSdk2BridgeThread(void *arg)
@@ -651,6 +653,10 @@ __attribute__((used, visibility("default"))) extern "C" void _mj_rosettaError(co
 void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
   if (act==GLFW_PRESS)
   {
+    if (keyboard_simulation_mutex == nullptr) {
+      return;
+    }
+    const std::lock_guard<std::recursive_mutex> lock(*keyboard_simulation_mutex);
     if(param::config.enable_elastic_band == 1) {
       if (key==GLFW_KEY_9) {
         elastic_band.enable_ = !elastic_band.enable_;
@@ -660,7 +666,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
         elastic_band.length_ += 0.1;
       }
     }
-    if(key==GLFW_KEY_BACKSPACE) {
+    if(key==GLFW_KEY_BACKSPACE && m != nullptr && d != nullptr) {
       mj_resetData(m, d);
       mj_forward(m, d);
     }
@@ -709,6 +715,38 @@ int main(int argc, char **argv)
 
   rclcpp::init(argc, argv);
   auto camera_ros_node = std::make_shared<rclcpp::Node>("xchallenge_realsense_camera");
+  auto lidar_ros_node = std::make_shared<rclcpp::Node>("xchallenge_lidar");
+
+  xchallenge::Lidar3dConfig lidar_config;
+  lidar_config.enabled = param::config.lidar_enabled;
+  lidar_config.site_name = param::config.lidar_site_name;
+  lidar_config.frame_id = param::config.lidar_frame_id;
+  lidar_config.topic = param::config.lidar_topic;
+  lidar_config.horizontal_samples = param::config.lidar_horizontal_samples;
+  lidar_config.vertical_samples = param::config.lidar_vertical_samples;
+  lidar_config.vertical_min_deg = param::config.lidar_vertical_min_deg;
+  lidar_config.vertical_max_deg = param::config.lidar_vertical_max_deg;
+  lidar_config.range_min_m = param::config.lidar_range_min_m;
+  lidar_config.range_max_m = param::config.lidar_range_max_m;
+  lidar_config.rate_hz = param::config.lidar_rate_hz;
+  lidar_config.exclude_mount_body = param::config.lidar_exclude_mount_body;
+
+  std::unique_ptr<xchallenge::RosLidarPublisher> lidar_publisher;
+  if (lidar_config.enabled)
+  {
+    try
+    {
+      lidar_publisher = std::make_unique<xchallenge::RosLidarPublisher>(lidar_ros_node, lidar_config);
+    }
+    catch (const std::exception& error)
+    {
+      std::cerr << "[LiDAR] Failed to create ROS publisher: " << error.what() << std::endl;
+      lidar_ros_node.reset();
+      camera_ros_node.reset();
+      rclcpp::shutdown();
+      return 1;
+    }
+  }
 
   // simulate object encapsulates the UI
   auto sim = std::make_unique<mj::Simulate>(
@@ -735,12 +773,14 @@ int main(int argc, char **argv)
   });
 
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge);
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge, lidar_config, lidar_publisher.get());
   // start simulation UI loop (blocking call)
-  glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);
+  keyboard_simulation_mutex = &sim->mtx;
+  glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_, user_key_cb);
   
   std::cout << "[ROS] rclcpp::ok() before RenderLoop = " << std::boolalpha << rclcpp::ok() << std::endl;
   sim->RenderLoop();
+  keyboard_simulation_mutex = nullptr;
   std::cerr << "[Shutdown] RenderLoop returned." << std::endl;
 
   sim->exitrequest.store(1);
@@ -768,6 +808,11 @@ int main(int argc, char **argv)
   camera_bridge.Unbind();
   std::cerr << "[Shutdown] Camera bridge unbound." << std::endl;
 
+  std::cerr << "[Shutdown] Destroying LiDAR publisher and node..." << std::endl;
+  lidar_publisher.reset();
+  lidar_ros_node.reset();
+  std::cerr << "[Shutdown] LiDAR publisher and node destroyed." << std::endl;
+
   std::cerr << "[Shutdown] Destroying ROS camera node..." << std::endl;
   camera_ros_node.reset();
   std::cerr << "[Shutdown] ROS camera node destroyed." << std::endl;
@@ -779,6 +824,10 @@ int main(int argc, char **argv)
   std::cerr << "[Shutdown] Destroying Simulate..." << std::endl;
   sim.reset();
   std::cerr << "[Shutdown] Simulate destroyed." << std::endl;
+
+  std::cerr << "[Shutdown] Terminating GLFW..." << std::endl;
+  glfwTerminate();
+  std::cerr << "[Shutdown] GLFW terminated." << std::endl;
 
   std::cerr << "[Shutdown] Freeing control noise..." << std::endl;
   free(ctrlnoise);

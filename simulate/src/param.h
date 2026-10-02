@@ -61,6 +61,19 @@ inline struct SimulationConfig
     int enable_elastic_band;
     int band_attached_link = 0;
 
+    bool lidar_enabled = false;
+    std::string lidar_site_name = "lidar_site";
+    std::string lidar_frame_id = "lidar_frame";
+    std::string lidar_topic = "/lidar/points";
+    int lidar_horizontal_samples = 180;
+    int lidar_vertical_samples = 16;
+    double lidar_vertical_min_deg = -15.0;
+    double lidar_vertical_max_deg = 15.0;
+    double lidar_range_min_m = 0.1;
+    double lidar_range_max_m = 20.0;
+    double lidar_rate_hz = 5.0;
+    bool lidar_exclude_mount_body = true;
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -80,6 +93,23 @@ inline struct SimulationConfig
             joystick_bits = cfg["joystick_bits"].as<int>();
             print_scene_information = cfg["print_scene_information"].as<int>();
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
+
+            if (cfg["lidar"])
+            {
+                const auto lidar = cfg["lidar"];
+                if (lidar["enabled"]) lidar_enabled = lidar["enabled"].as<bool>();
+                if (lidar["site_name"]) lidar_site_name = lidar["site_name"].as<std::string>();
+                if (lidar["frame_id"]) lidar_frame_id = lidar["frame_id"].as<std::string>();
+                if (lidar["topic"]) lidar_topic = lidar["topic"].as<std::string>();
+                if (lidar["horizontal_samples"]) lidar_horizontal_samples = lidar["horizontal_samples"].as<int>();
+                if (lidar["vertical_samples"]) lidar_vertical_samples = lidar["vertical_samples"].as<int>();
+                if (lidar["vertical_min_deg"]) lidar_vertical_min_deg = lidar["vertical_min_deg"].as<double>();
+                if (lidar["vertical_max_deg"]) lidar_vertical_max_deg = lidar["vertical_max_deg"].as<double>();
+                if (lidar["range_min_m"]) lidar_range_min_m = lidar["range_min_m"].as<double>();
+                if (lidar["range_max_m"]) lidar_range_max_m = lidar["range_max_m"].as<double>();
+                if (lidar["rate_hz"]) lidar_rate_hz = lidar["rate_hz"].as<double>();
+                if (lidar["exclude_mount_body"]) lidar_exclude_mount_body = lidar["exclude_mount_body"].as<bool>();
+            }
         }
         catch(const std::exception& e)
         {

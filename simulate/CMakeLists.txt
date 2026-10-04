@@ -16,6 +16,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(rosgraph_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(OpenGL REQUIRED)
 
 include_directories(
@@ -106,9 +109,16 @@ link_libraries(
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
 
-target_link_libraries(unitree_mujoco PRIVATE
+target_link_libraries(unitree_mujoco
   xchallenge_realsense_camera
   xchallenge_lidar
+)
+
+ament_target_dependencies(unitree_mujoco
+  rclcpp
+  geometry_msgs
+  rosgraph_msgs
+  tf2_ros
 )
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

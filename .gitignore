@@ -4,3 +4,7 @@
 **/log/
 **/install/
 simulate/mujoco
+# ROS 2 colcon artifacts
+ros2_build/
+ros2_install/
+ros2_log/

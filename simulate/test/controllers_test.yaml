@@ -1,0 +1,16 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    left_elbow_test_controller:
+      type: forward_command_controller/ForwardCommandController
+
+left_elbow_test_controller:
+  ros__parameters:
+    joints:
+      - left_elbow_joint
+
+    interface_name: position

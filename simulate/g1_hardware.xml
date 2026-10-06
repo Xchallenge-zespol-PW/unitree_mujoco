@@ -1,0 +1,11 @@
+<library path="xchallenge_g1_hardware">
+
+  <class name="xchallenge_g1_hardware/UnitreeG1SimHardware" type="xchallenge::g1_hardware::UnitreeG1SimHardware" base_class_type="hardware_interface::SystemInterface">
+    <description>Full-body Unitree G1 hardware interface using DDS LowCmd and LowState.</description>
+  </class>
+
+  <class name="xchallenge_g1_hardware/UnitreeG1ArmHardware" type="xchallenge::g1_hardware::UnitreeG1ArmHardware" base_class_type="hardware_interface::SystemInterface">
+    <description>Unitree G1 arm hardware interface using DDS ArmSdk and LowState.</description>
+  </class>
+
+</library>

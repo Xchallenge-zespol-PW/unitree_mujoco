@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>unitree_mujoco</name>
+  <version>0.1.0</version>
+
+  <description>Unitree MuJoCo simulation with xChallenge ROS2 integration.</description>
+
+  <maintainer email="TODO@example.com">xChallenge PW</maintainer>
+
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+
+  <depend>sensor_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>geometry_msgs</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

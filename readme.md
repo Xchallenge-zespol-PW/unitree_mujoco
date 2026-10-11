@@ -58,7 +58,12 @@ Download the mujoco [release](https://github.com/google-deepmind/mujoco/releases
 
 ```
 cd unitree_mujoco/simulate/
-ln -s ~/.mujoco/mujoco-3.3.6 mujoco
+wget https://github.com/google-deepmind/mujoco/releases/download/3.3.6/mujoco-3.3.6-linux-x86_64.tar.gz
+tar -xzf mujoco-3.3.6-linux-x86_64.tar.gz
+ln -s ~/mujoco-3.3.6 mujoco
+cmake -S . -B build
+cd build
+make -j4
 ```
 
 ### 2. Compile unitree_mujoco

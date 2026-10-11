@@ -39,9 +39,6 @@ Note:
 
 ```bash
 sudo apt install libyaml-cpp-dev libspdlog-dev libboost-all-dev libglfw3-dev
-sudo apt install ros-foxy-rmw-cyclonedds-cpp
-sudo apt install ros-foxy-rosidl-generator-dds-idl
-sudo apt install libyaml-cpp-dev
 ```
 
 #### unitree_sdk2

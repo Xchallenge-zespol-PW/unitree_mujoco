@@ -48,8 +48,10 @@ git clone https://github.com/unitreerobotics/unitree_sdk2.git
 cd unitree_sdk2/
 mkdir build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/opt/unitree_robotics
-sudo make install
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build . -j"$(nproc)"
+
+sudo cmake --install .
 ```
 For more details, see: https://github.com/unitreerobotics/unitree_sdk2
 #### mujoco

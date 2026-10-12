@@ -62,7 +62,7 @@
   </asset>
 
   <worldbody>
-    <body name="pelvis" pos="0 0 0.793">
+    <body name="pelvis" pos="0 -3.4 0.8" euler="0 0 -90">
       <site name="imu" size="0.01" pos="0.0 0.0 0.0" />
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813"
         diaginertia="0.010549 0.0093089 0.0079184" />
@@ -226,7 +226,7 @@
             <geom pos="0.0039635 0 -0.054" type="mesh" contype="0" conaffinity="0" group="1"
               density="0" rgba="0.2 0.2 0.2 1" mesh="head_link" />
 
-            <body name="d435i_mount" pos="0.0576235 0.01753 0.41987" euler="0 0.8307767239493009 0">
+            <body name="d435i_mount" pos="0.0576235 0.01753 0.41987" quat="0.9149596678498247 0 0.40354529635239006 0">
                 <attach model="d435i_model" body="d435i" prefix="d435i_" />
             </body>
 
@@ -531,5 +531,13 @@
     <gyro name="secondary_imu_gyro" site="secondary_imu" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="secondary_imu_acc" site="secondary_imu" noise="1e-2" cutoff="157"/>
   </sensor>
-
+  <keyframe>
+    <key name="arm_stretched_forward" 
+         qpos="0 -3.6 0.8 0.7071 0 0 -0.7071 
+               0 0 0 0 0 0 
+               0 0 0 0 0 0 
+               0 0 0.6 
+               -1.8 0 0 1.57 0.7071 0 0 
+               0 0 0 0 0 0 0" />
+  </keyframe>
 </mujoco>

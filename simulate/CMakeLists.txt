@@ -16,14 +16,11 @@ find_package(Boost REQUIRED COMPONENTS program_options)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_lifecycle REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(hardware_interface REQUIRED)
-find_package(pluginlib REQUIRED)
 
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -50,7 +47,7 @@ file(GLOB SIM_SRC
 )
 
 # -----------------------------------------------------------------------------
-# xChallenge RGB-D camera
+# RGB-D camera
 # -----------------------------------------------------------------------------
 
 add_library(xchallenge_realsense_camera STATIC
@@ -78,7 +75,7 @@ ament_target_dependencies(xchallenge_realsense_camera
 )
 
 # -----------------------------------------------------------------------------
-# xChallenge 3D LiDAR
+# 3D LiDAR
 # -----------------------------------------------------------------------------
 
 add_library(xchallenge_lidar STATIC
@@ -102,7 +99,7 @@ ament_target_dependencies(xchallenge_lidar
 )
 
 # -----------------------------------------------------------------------------
-# Existing global link dependencies
+# Global link dependencies
 # -----------------------------------------------------------------------------
 
 link_libraries(
@@ -116,7 +113,7 @@ link_libraries(
 )
 
 # -----------------------------------------------------------------------------
-# Main simulator executable
+# Main simulator
 # -----------------------------------------------------------------------------
 
 add_executable(unitree_mujoco
@@ -137,64 +134,13 @@ ament_target_dependencies(unitree_mujoco
 )
 
 # -----------------------------------------------------------------------------
-# Joystick test executable
+# Diagnostic executables
 # -----------------------------------------------------------------------------
 
 add_executable(jstest
   src/joystick/jstest.cc
   src/joystick/joystick.cc
 )
-
-# -----------------------------------------------------------------------------
-# xChallenge Unitree G1 ros2_control hardware
-# -----------------------------------------------------------------------------
-
-add_library(xchallenge_g1_hardware SHARED
-  src/g1_hardware/unitree_g1_hardware.cpp
-)
-
-target_include_directories(xchallenge_g1_hardware
-  PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(xchallenge_g1_hardware
-  unitree_sdk2
-)
-
-ament_target_dependencies(xchallenge_g1_hardware
-  hardware_interface
-  pluginlib
-  rclcpp
-  rclcpp_lifecycle
-)
-
-pluginlib_export_plugin_description_file(hardware_interface g1_hardware.xml)
-
-# -----------------------------------------------------------------------------
-# Install
-# -----------------------------------------------------------------------------
-
-install(
-  TARGETS xchallenge_g1_hardware
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
-)
-
-install(
-  DIRECTORY include/
-  DESTINATION include
-)
-
-ament_export_dependencies(
-  hardware_interface
-  pluginlib
-  rclcpp
-  rclcpp_lifecycle
-)
-
-ament_package()
 
 add_executable(g1_lowstate_test
   test/g1_lowstate_test.cpp
@@ -203,3 +149,14 @@ add_executable(g1_lowstate_test
 target_link_libraries(g1_lowstate_test
   unitree_sdk2
 )
+
+# -----------------------------------------------------------------------------
+# Install
+# -----------------------------------------------------------------------------
+
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
+
+ament_package()

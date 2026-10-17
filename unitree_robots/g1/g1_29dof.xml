@@ -57,10 +57,12 @@
     <mesh name="right_wrist_pitch_link" file="right_wrist_pitch_link.STL" />
     <mesh name="right_wrist_yaw_link" file="right_wrist_yaw_link.STL" />
     <mesh name="right_rubber_hand" file="right_rubber_hand.STL" />
+
+    <model name="d435i_model" file="../common/realsense_d435i/d435i_xchallenge.xml" />
   </asset>
 
   <worldbody>
-    <body name="pelvis" pos="0 0 0.793">
+    <body name="pelvis" pos="0 -3.4 0.8" euler="0 0 -90">
       <site name="imu" size="0.01" pos="0.0 0.0 0.0" />
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813"
         diaginertia="0.010549 0.0093089 0.0079184" />
@@ -207,6 +209,8 @@
             mesh="waist_roll_link" />
           <site name="secondary_imu" size="0.01" pos="-0.03959 -0.00224 0.13792"/>
           <body name="torso_link" pos="0 0 0.019">
+            <!-- Generic LiDAR test mount, 4.3 cm above the supplied head mesh. -->
+            <site name="lidar_site" pos="0.0039635 0 0.52" quat="1 0 0 0" size="0.015" rgba="1 0.2 0 1"/>
             <inertial pos="0.00331658 0.000261533 0.179856"
               quat="0.999831 0.000376204 0.0179895 -0.00377704" mass="9.598"
               diaginertia="0.12407 0.111951 0.0325382" />
@@ -221,6 +225,11 @@
               mesh="logo_link" />
             <geom pos="0.0039635 0 -0.054" type="mesh" contype="0" conaffinity="0" group="1"
               density="0" rgba="0.2 0.2 0.2 1" mesh="head_link" />
+
+            <body name="d435i_mount" pos="0.0576235 0.01753 0.41987" quat="0.9149596678498247 0 0.40354529635239006 0">
+                <attach model="d435i_model" body="d435i" prefix="d435i_" />
+            </body>
+
             <geom pos="0.0039635 0 -0.054" type="mesh" rgba="0.2 0.2 0.2 1" mesh="head_link" />
             <geom pos="0.0039635 0 -0.054" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0"
               group="1" density="0" rgba="0.7 0.7 0.7 1" mesh="waist_support_link" />
@@ -522,5 +531,13 @@
     <gyro name="secondary_imu_gyro" site="secondary_imu" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="secondary_imu_acc" site="secondary_imu" noise="1e-2" cutoff="157"/>
   </sensor>
-
+  <keyframe>
+    <key name="arm_stretched_forward" 
+         qpos="0 -3.6 0.8 0.7071 0 0 -0.7071 
+               0 0 0 0 0 0 
+               0 0 0 0 0 0 
+               0 0 0.6 
+               -1.8 0 0 1.57 0.7071 0 0 
+               0 0 0 0 0 0 0" />
+  </keyframe>
 </mujoco>

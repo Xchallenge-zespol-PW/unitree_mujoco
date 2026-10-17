@@ -18,6 +18,7 @@
 #undef private
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,11 +30,19 @@
 #include <string>
 #include <thread>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rosgraph_msgs/msg/clock.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
+
 #include <mujoco/mujoco.h>
 #include "simulate.h"
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
+#include "realsense_camera_bridge.hpp"
+#include "mujoco_lidar3d.hpp"
+#include "ros_lidar_publisher.hpp"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -90,6 +99,8 @@ namespace
   namespace mj = ::mujoco;
   namespace mju = ::mujoco::sample_util;
 
+  using ClockPublisher = rclcpp::Publisher<rosgraph_msgs::msg::Clock>;
+
   // constants
   const double syncMisalign = 0.1;       // maximum mis-alignment before re-sync (simulation seconds)
   const double simRefreshFraction = 0.7; // fraction of refresh available for simulation
@@ -98,6 +109,7 @@ namespace
   // model and data
   mjModel *m = nullptr;
   mjData *d = nullptr;
+  std::recursive_mutex* keyboard_simulation_mutex = nullptr;
 
   // control noise variables
   mjtNum *ctrlnoise = nullptr;
@@ -323,12 +335,83 @@ namespace
     return mnew;
   }
 
+  void PublishSimulationClock(const ClockPublisher::SharedPtr& clock_publisher, double simulation_time_s)
+  {
+    if (clock_publisher == nullptr || !rclcpp::ok()) {
+      return;
+    }
+
+    if (!std::isfinite(simulation_time_s) || simulation_time_s < 0.0 || simulation_time_s >= static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
+      throw std::runtime_error("Invalid MuJoCo simulation time for /clock");
+    }
+
+    const auto ns = static_cast<std::int64_t>(std::llround(simulation_time_s * 1000000000.0));
+
+    rosgraph_msgs::msg::Clock message;
+    message.clock.sec = static_cast<std::int32_t>(ns / 1000000000LL);
+    message.clock.nanosec = static_cast<std::uint32_t>(ns % 1000000000LL);
+
+    try {
+      clock_publisher->publish(message);
+    }
+    catch (const rclcpp::exceptions::RCLError&) {
+      if (rclcpp::ok()) {
+        throw;
+      }
+    }
+  }
+
+  void PublishLidarStaticTransform(const mjModel* model, const xchallenge::Lidar3dConfig& lidar_config, tf2_ros::StaticTransformBroadcaster& static_tf_broadcaster)
+  {
+    if (model == nullptr)
+    {
+      throw std::invalid_argument("Cannot publish LiDAR TF without mjModel");
+    }
+
+    const int site_id = mj_name2id(model, mjOBJ_SITE, lidar_config.site_name.c_str());
+    if (site_id < 0)
+    {
+      throw std::runtime_error("Cannot publish LiDAR TF: missing site '" + lidar_config.site_name + "'");
+    }
+
+    const int parent_body_id = model->site_bodyid[site_id];
+    const char* parent_body_name = mj_id2name(model, mjOBJ_BODY, parent_body_id);
+
+    if (parent_body_name == nullptr || parent_body_name[0] == '\0')
+    {
+      throw std::runtime_error("Cannot publish LiDAR TF: site parent body has no name");
+    }
+
+    const mjtNum* position = model->site_pos + 3 * site_id;
+    const mjtNum* quaternion = model->site_quat + 4 * site_id;
+
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.stamp.sec = 0;
+    transform.header.stamp.nanosec = 0;
+    transform.header.frame_id = parent_body_name;
+    transform.child_frame_id = lidar_config.frame_id;
+
+    transform.transform.translation.x = position[0];
+    transform.transform.translation.y = position[1];
+    transform.transform.translation.z = position[2];
+
+    transform.transform.rotation.x = quaternion[1];
+    transform.transform.rotation.y = quaternion[2];
+    transform.transform.rotation.z = quaternion[3];
+    transform.transform.rotation.w = quaternion[0];
+
+    static_tf_broadcaster.sendTransform(transform);
+
+    std::cout << "[TF] Published static transform '" << transform.header.frame_id << "' -> '" << transform.child_frame_id << "' from MuJoCo site '" << lidar_config.site_name << "'." << std::endl;
+  }
+
   // simulate in background thread (while rendering in main thread)
-  void PhysicsLoop(mj::Simulate &sim)
+  void PhysicsLoop(mj::Simulate &sim, xchallenge::MujocoLidar3d* lidar, xchallenge::RosLidarPublisher* lidar_publisher, const ClockPublisher::SharedPtr& clock_publisher)
   {
     // cpu-sim syncronization point
     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
     mjtNum syncSim = 0;
+    double last_clock_time = -std::numeric_limits<double>::infinity();
 
     // ChannelFactory::Instance()->Init(0);
     // UnitreeDds ud(d);
@@ -336,65 +419,12 @@ namespace
     // run until asked to exit
     while (!sim.exitrequest.load())
     {
-      if (sim.droploadrequest.load())
-      {
-        sim.LoadMessage(sim.dropfilename);
-        mjModel *mnew = LoadModel(sim.dropfilename, sim);
-        sim.droploadrequest.store(false);
-
-        mjData *dnew = nullptr;
-        if (mnew)
-          dnew = mj_makeData(mnew);
-        if (dnew)
-        {
-          sim.Load(mnew, dnew, sim.dropfilename);
-
-          mj_deleteData(d);
-          mj_deleteModel(m);
-
-          m = mnew;
-          d = dnew;
-          mj_forward(m, d);
-
-          // allocate ctrlnoise
-          free(ctrlnoise);
-          ctrlnoise = (mjtNum *)malloc(sizeof(mjtNum) * m->nu);
-          mju_zero(ctrlnoise, m->nu);
-        }
-        else
-        {
-          sim.LoadMessageClear();
-        }
-      }
-
-      if (sim.uiloadrequest.load())
-      {
-        sim.uiloadrequest.fetch_sub(1);
-        sim.LoadMessage(sim.filename);
-        mjModel *mnew = LoadModel(sim.filename, sim);
-        mjData *dnew = nullptr;
-        if (mnew)
-          dnew = mj_makeData(mnew);
-        if (dnew)
-        {
-          sim.Load(mnew, dnew, sim.filename);
-
-          mj_deleteData(d);
-          mj_deleteModel(m);
-
-          m = mnew;
-          d = dnew;
-          mj_forward(m, d);
-
-          // allocate ctrlnoise
-          free(ctrlnoise);
-          ctrlnoise = static_cast<mjtNum *>(malloc(sizeof(mjtNum) * m->nu));
-          mju_zero(ctrlnoise, m->nu);
-        }
-        else
-        {
-          sim.LoadMessageClear();
-        }
+      // Camera and DDS borrow model/data: reloading would invalidate their pointers.
+      const bool dropped_model = sim.droploadrequest.exchange(false);
+      const int requested_reload = sim.uiloadrequest.exchange(0);
+      if (dropped_model || requested_reload != 0) {
+        std::cerr << "[Model] Live reload disabled while bridges borrow mjModel/mjData. Restart to load a scene." << std::endl;
+        sim.LoadMessageClear();
       }
 
       // sleep for 1 ms or yield, to let main thread run
@@ -407,6 +437,10 @@ namespace
       {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
+
+      bool lidar_frame_ready = false;
+      bool clock_ready = false;
+      double clock_time = 0.0;
 
       {
         // lock the sim mutex
@@ -527,16 +561,64 @@ namespace
             mj_forward(m, d);
             sim.speed_changed = true;
           }
+
+          if (lidar != nullptr && lidar_publisher != nullptr && d != nullptr)
+          {
+            try
+            {
+              lidar_frame_ready = lidar->CaptureIfDue(d);
+            }
+            catch (const std::exception& error)
+            {
+              std::cerr << "[LiDAR] Capture failed: " << error.what() << std::endl;
+              sim.exitrequest.store(1);
+            }
+          }
+
+          if (d != nullptr && std::isfinite(d->time) && d->time >= 0.0 && d->time != last_clock_time)
+          {
+            clock_time = d->time;
+            last_clock_time = d->time;
+            clock_ready = true;
+          }
         }
-      } // release std::lock_guard<std::mutex>
+      } // release simulation mutex
+
+      if (clock_ready)
+      {
+        try
+        {
+          PublishSimulationClock(clock_publisher, clock_time);
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[ROS Clock] Publish failed: " << error.what() << std::endl;
+          sim.exitrequest.store(1);
+        }
+      }
+
+      if (lidar_frame_ready && lidar != nullptr && lidar_publisher != nullptr)
+      {
+        try
+        {
+          lidar_publisher->Publish(lidar->Frame());
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[LiDAR] Publish failed: " << error.what() << std::endl;
+          sim.exitrequest.store(1);
+        }
+      }
     }
   }
 } // namespace
 
 //-------------------------------------- physics_thread --------------------------------------------
 
-void PhysicsThread(mj::Simulate *sim, const char *filename)
+void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge, xchallenge::Lidar3dConfig lidar_config, xchallenge::RosLidarPublisher* lidar_publisher, const ClockPublisher::SharedPtr& clock_publisher, const std::shared_ptr<tf2_ros::StaticTransformBroadcaster>& static_tf_broadcaster)
 {
+  std::unique_ptr<xchallenge::MujocoLidar3d> lidar;
+
   // request loadmodel if file given (otherwise drag-and-drop)
   if (filename != nullptr)
   {
@@ -549,6 +631,40 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
       sim->Load(m, d, filename);
       mj_forward(m, d);
 
+      if (lidar_config.enabled)
+      {
+        if (lidar_publisher == nullptr)
+        {
+          std::cerr << "[LiDAR] Enabled, but ROS publisher is not available." << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+
+        if (static_tf_broadcaster == nullptr)
+        {
+          std::cerr << "[LiDAR] Enabled, but static TF broadcaster is not available." << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+
+        try
+        {
+          lidar = std::make_unique<xchallenge::MujocoLidar3d>(m, lidar_config);
+          PublishLidarStaticTransform(m, lidar_config, *static_tf_broadcaster);
+          std::cout << "[LiDAR] Bound to site '" << lidar_config.site_name << "', topic '" << lidar_config.topic << "', " << lidar_config.horizontal_samples << "x" << lidar_config.vertical_samples << " @ " << lidar_config.rate_hz << " Hz." << std::endl;
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[LiDAR] Initialization failed: " << error.what() << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+      }
+
+      if (camera_bridge != nullptr) {
+        camera_bridge->Bind(m, d, &sim->mtx);
+      }
+
       // allocate ctrlnoise
       free(ctrlnoise);
       ctrlnoise = static_cast<mjtNum *>(malloc(sizeof(mjtNum) * m->nu));
@@ -560,33 +676,34 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     }
   }
 
-  PhysicsLoop(*sim);
-
-  // delete everything we allocated
-  free(ctrlnoise);
-  mj_deleteData(d);
-  mj_deleteModel(m);
-
-  exit(0);
+  PhysicsLoop(*sim, lidar.get(), lidar_publisher, clock_publisher);
 }
 
 void *UnitreeSdk2BridgeThread(void *arg)
 {
-  // Wait for mujoco data
-  while (true)
-  {
-    if (d)
-    {
-      std::cout << "Mujoco data is prepared" << std::endl;
-      break;
-    }
-    usleep(500000);
+  auto* sim = static_cast<mj::Simulate*>(arg);
+
+  if (sim == nullptr) {
+      return nullptr;
+  }
+
+  while (!sim->exitrequest.load()) {
+      if (m != nullptr && d != nullptr) {
+          std::cout << "Mujoco data is prepared" << std::endl;
+          break;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  if (sim->exitrequest.load()) {
+      return nullptr;
   }
 
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
 
-
   int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
+
   if (body_id < 0) {
     body_id = mj_name2id(m, mjOBJ_BODY, "base_link");
   }
@@ -598,7 +715,8 @@ void *UnitreeSdk2BridgeThread(void *arg)
     idl_type = param::ResolveIdlType(param::config.robot, m->nu, param::config.idl_type);
   } catch (const std::invalid_argument& error) {
     std::cerr << error.what() << std::endl;
-    std::exit(EXIT_FAILURE);
+    sim->exitrequest.store(1);
+    return nullptr;
   }
 
   if (idl_type == param::IDL_HG) {
@@ -610,10 +728,21 @@ void *UnitreeSdk2BridgeThread(void *arg)
   }
   interface->start();
   
-  while (true)
-  {
-    sleep(1);
-  }
+  while (!sim->exitrequest.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+  std::cerr << "[Shutdown] Stopping Unitree bridge..." << std::endl;
+
+  interface->stop();
+
+  std::cerr << "[Shutdown] Unitree recurrent thread stopped." << std::endl;
+
+  interface.reset();
+
+  std::cerr << "[Shutdown] Unitree bridge destroyed." << std::endl;
+
+  return nullptr;
 }
 //------------------------------------------ main --------------------------------------------------
 
@@ -631,6 +760,10 @@ __attribute__((used, visibility("default"))) extern "C" void _mj_rosettaError(co
 void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
   if (act==GLFW_PRESS)
   {
+    if (keyboard_simulation_mutex == nullptr) {
+      return;
+    }
+    const std::lock_guard<std::recursive_mutex> lock(*keyboard_simulation_mutex);
     if(param::config.enable_elastic_band == 1) {
       if (key==GLFW_KEY_9) {
         elastic_band.enable_ = !elastic_band.enable_;
@@ -640,7 +773,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
         elastic_band.length_ += 0.1;
       }
     }
-    if(key==GLFW_KEY_BACKSPACE) {
+    if(key==GLFW_KEY_BACKSPACE && m != nullptr && d != nullptr) {
       mj_resetData(m, d);
       mj_forward(m, d);
     }
@@ -687,20 +820,150 @@ int main(int argc, char **argv)
     param::config.robot_scene = proj_dir.parent_path() / "unitree_robots" / param::config.robot / param::config.robot_scene;
   }
 
+  rclcpp::init(argc, argv);
+  auto simulation_ros_node = std::make_shared<rclcpp::Node>("xchallenge_simulation");
+  auto camera_ros_node = std::make_shared<rclcpp::Node>("xchallenge_realsense_camera");
+  auto lidar_ros_node = std::make_shared<rclcpp::Node>("xchallenge_lidar");
+  
+  auto clock_publisher = simulation_ros_node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
+  auto static_tf_broadcaster = std::make_shared<tf2_ros::StaticTransformBroadcaster>(*simulation_ros_node);
+
+  xchallenge::Lidar3dConfig lidar_config;
+  lidar_config.enabled = param::config.lidar_enabled;
+  lidar_config.site_name = param::config.lidar_site_name;
+  lidar_config.frame_id = param::config.lidar_frame_id;
+  lidar_config.topic = param::config.lidar_topic;
+  lidar_config.horizontal_samples = param::config.lidar_horizontal_samples;
+  lidar_config.vertical_samples = param::config.lidar_vertical_samples;
+  lidar_config.vertical_min_deg = param::config.lidar_vertical_min_deg;
+  lidar_config.vertical_max_deg = param::config.lidar_vertical_max_deg;
+  lidar_config.range_min_m = param::config.lidar_range_min_m;
+  lidar_config.range_max_m = param::config.lidar_range_max_m;
+  lidar_config.rate_hz = param::config.lidar_rate_hz;
+  lidar_config.exclude_mount_body = param::config.lidar_exclude_mount_body;
+
+  std::unique_ptr<xchallenge::RosLidarPublisher> lidar_publisher;
+  if (lidar_config.enabled)
+  {
+    try
+    {
+      lidar_publisher = std::make_unique<xchallenge::RosLidarPublisher>(lidar_ros_node, lidar_config);
+    }
+    catch (const std::exception& error)
+    {
+      std::cerr << "[LiDAR] Failed to create ROS publisher: " << error.what() << std::endl;
+      static_tf_broadcaster.reset();
+      clock_publisher.reset();
+      lidar_ros_node.reset();
+      camera_ros_node.reset();
+      simulation_ros_node.reset();
+      rclcpp::shutdown();
+      return 1;
+    }
+  }
+
   // simulate object encapsulates the UI
   auto sim = std::make_unique<mj::Simulate>(
     std::make_unique<mj::GlfwAdapter>(),
     &cam, &opt, &pert, /* is_passive = */ false);
 
-  std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
+  std::thread unitree_thread(UnitreeSdk2BridgeThread, sim.get());
+
+  xchallenge::RealSenseCameraBridge camera_bridge("d435i_color", "d435i_depth", 320, 240, 30, camera_ros_node);  
+  
+  if (!camera_bridge.Start()) {
+    std::cerr << "[main] Failed to start RealSense camera bridge." << std::endl;
+    return 1;
+  }
+
+  std::thread ros_shutdown_thread([&sim]() {
+      while (rclcpp::ok() && !sim->exitrequest.load()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+
+      if (!rclcpp::ok()) {
+          sim->exitrequest.store(1);
+      }
+  });
 
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
-  // start simulation UI loop (blocking call)
-  glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge, lidar_config, lidar_publisher.get(), clock_publisher, static_tf_broadcaster);  // start simulation UI loop (blocking call)
+  keyboard_simulation_mutex = &sim->mtx;
+  glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_, user_key_cb);
+  
+  std::cout << "[ROS] rclcpp::ok() before RenderLoop = " << std::boolalpha << rclcpp::ok() << std::endl;
   sim->RenderLoop();
-  physicsthreadhandle.join();
+  keyboard_simulation_mutex = nullptr;
+  std::cerr << "[Shutdown] RenderLoop returned." << std::endl;
 
-  pthread_exit(NULL);
+  sim->exitrequest.store(1);
+
+  camera_bridge.Stop();
+  std::cerr << "[Shutdown] Camera bridge stopped." << std::endl;
+
+  if (physicsthreadhandle.joinable()) {
+    physicsthreadhandle.join();
+  }
+
+  if (unitree_thread.joinable()) {
+    unitree_thread.join();
+  }
+
+  if (ros_shutdown_thread.joinable()) {
+    ros_shutdown_thread.join();
+  }
+
+  std::cerr << "[Shutdown] Physics thread joined." << std::endl;
+  std::cerr << "[Shutdown] Unitree thread joined." << std::endl;
+  std::cerr << "[Shutdown] ROS shutdown thread joined." << std::endl;
+
+  std::cerr << "[Shutdown] Unbinding camera bridge..." << std::endl;
+  camera_bridge.Unbind();
+  std::cerr << "[Shutdown] Camera bridge unbound." << std::endl;
+
+  std::cerr << "[Shutdown] Destroying LiDAR publisher and node..." << std::endl;
+  lidar_publisher.reset();
+  lidar_ros_node.reset();
+  std::cerr << "[Shutdown] LiDAR publisher and node destroyed." << std::endl;
+
+  std::cerr << "[Shutdown] Destroying ROS camera node..." << std::endl;
+  camera_ros_node.reset();
+  std::cerr << "[Shutdown] ROS camera node destroyed." << std::endl;
+
+  std::cerr << "[Shutdown] Destroying simulation ROS publishers..." << std::endl;
+  static_tf_broadcaster.reset();
+  clock_publisher.reset();
+  simulation_ros_node.reset();
+  std::cerr << "[Shutdown] Simulation ROS publishers destroyed." << std::endl;
+
+  if (rclcpp::ok()) {
+      rclcpp::shutdown();
+  }
+
+  std::cerr << "[Shutdown] Destroying Simulate..." << std::endl;
+  sim.reset();
+  std::cerr << "[Shutdown] Simulate destroyed." << std::endl;
+
+  std::cerr << "[Shutdown] Terminating GLFW..." << std::endl;
+  glfwTerminate();
+  std::cerr << "[Shutdown] GLFW terminated." << std::endl;
+
+  std::cerr << "[Shutdown] Freeing control noise..." << std::endl;
+  free(ctrlnoise);
+  ctrlnoise = nullptr;
+  std::cerr << "[Shutdown] Control noise freed." << std::endl;
+
+  std::cerr << "[Shutdown] Deleting mjData..." << std::endl;
+  mj_deleteData(d);
+  d = nullptr;
+  std::cerr << "[Shutdown] mjData deleted." << std::endl;
+
+  std::cerr << "[Shutdown] Deleting mjModel..." << std::endl;
+  mj_deleteModel(m);
+  m = nullptr;
+  std::cerr << "[Shutdown] mjModel deleted." << std::endl;
+
+  std::cerr << "[Shutdown] Clean exit." << std::endl;
+
   return 0;
 }

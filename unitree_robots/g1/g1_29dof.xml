@@ -531,13 +531,5 @@
     <gyro name="secondary_imu_gyro" site="secondary_imu" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="secondary_imu_acc" site="secondary_imu" noise="1e-2" cutoff="157"/>
   </sensor>
-  <keyframe>
-    <key name="arm_stretched_forward" 
-         qpos="0 -3.6 0.8 0.7071 0 0 -0.7071 
-               0 0 0 0 0 0 
-               0 0 0 0 0 0 
-               0 0 0.6 
-               -1.8 0 0 1.57 0.7071 0 0 
-               0 0 0 0 0 0 0" />
-  </keyframe>
+
 </mujoco>

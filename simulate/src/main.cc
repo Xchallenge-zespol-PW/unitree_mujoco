@@ -43,6 +43,8 @@
 #include "realsense_camera_bridge.hpp"
 #include "mujoco_lidar3d.hpp"
 #include "ros_lidar_publisher.hpp"
+#include "mujoco_odometry.hpp"
+#include "ros_odometry_publisher.hpp"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -405,13 +407,29 @@ namespace
     std::cout << "[TF] Published static transform '" << transform.header.frame_id << "' -> '" << transform.child_frame_id << "' from MuJoCo site '" << lidar_config.site_name << "'." << std::endl;
   }
 
+  // advance one timestep; while held, time and sensors advance but the state is not integrated
+  void Step(bool held)
+  {
+    if (held)
+    {
+      mju_zero(d->qvel, m->nv);
+      mj_forward(m, d);
+      d->time += m->opt.timestep;
+    }
+    else
+    {
+      mj_step(m, d);
+    }
+  }
+
   // simulate in background thread (while rendering in main thread)
-  void PhysicsLoop(mj::Simulate &sim, xchallenge::MujocoLidar3d* lidar, xchallenge::RosLidarPublisher* lidar_publisher, const ClockPublisher::SharedPtr& clock_publisher)
+  void PhysicsLoop(mj::Simulate &sim, xchallenge::MujocoLidar3d* lidar, xchallenge::RosLidarPublisher* lidar_publisher, xchallenge::MujocoOdometry* odometry, xchallenge::RosOdometryPublisher* odometry_publisher, const ClockPublisher::SharedPtr& clock_publisher)
   {
     // cpu-sim syncronization point
     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
     mjtNum syncSim = 0;
     double last_clock_time = -std::numeric_limits<double>::infinity();
+    bool held = false;
 
     // ChannelFactory::Instance()->Init(0);
     // UnitreeDds ud(d);
@@ -439,6 +457,7 @@ namespace
       }
 
       bool lidar_frame_ready = false;
+      bool odometry_frame_ready = false;
       bool clock_ready = false;
       double clock_time = 0.0;
 
@@ -453,6 +472,14 @@ namespace
           if (sim.run)
           {
             bool stepped = false;
+
+            // hold the robot until a controller takes over
+            const bool hold = param::config.hold_until_lowcmd == 1 && !lowcmd_active.load();
+            if (hold != held)
+            {
+              held = hold;
+              std::cout << (held ? "[Hold] Robot held until a non-zero rt/lowcmd arrives." : "[Hold] lowcmd received, releasing robot.") << std::endl;
+            }
 
             // record cpu time at start of iteration
             const auto startCPU = mj::Simulate::Clock::now();
@@ -495,7 +522,7 @@ namespace
               sim.speed_changed = false;
 
               // run single step, let next iteration deal with timing
-              mj_step(m, d);
+              Step(held);
               stepped = true;
             }
 
@@ -535,8 +562,8 @@ namespace
                   }
                 }
 
-                // call mj_step
-                mj_step(m, d);
+                // call mj_step (or freeze the state while held)
+                Step(held);
                 stepped = true;
 
                 // break if reset
@@ -575,6 +602,19 @@ namespace
             }
           }
 
+          if (odometry != nullptr && odometry_publisher != nullptr && d != nullptr)
+          {
+            try
+            {
+              odometry_frame_ready = odometry->CaptureIfDue(d);
+            }
+            catch (const std::exception& error)
+            {
+              std::cerr << "[Odometry] Capture failed: " << error.what() << std::endl;
+              sim.exitrequest.store(1);
+            }
+          }
+
           if (d != nullptr && std::isfinite(d->time) && d->time >= 0.0 && d->time != last_clock_time)
           {
             clock_time = d->time;
@@ -609,15 +649,29 @@ namespace
           sim.exitrequest.store(1);
         }
       }
+
+      if (odometry_frame_ready && odometry != nullptr && odometry_publisher != nullptr)
+      {
+        try
+        {
+          odometry_publisher->Publish(odometry->Frame());
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[Odometry] Publish failed: " << error.what() << std::endl;
+          sim.exitrequest.store(1);
+        }
+      }
     }
   }
 } // namespace
 
 //-------------------------------------- physics_thread --------------------------------------------
 
-void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge, xchallenge::Lidar3dConfig lidar_config, xchallenge::RosLidarPublisher* lidar_publisher, const ClockPublisher::SharedPtr& clock_publisher, const std::shared_ptr<tf2_ros::StaticTransformBroadcaster>& static_tf_broadcaster)
+void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSenseCameraBridge* camera_bridge, xchallenge::Lidar3dConfig lidar_config, xchallenge::RosLidarPublisher* lidar_publisher, xchallenge::OdometryConfig odometry_config, xchallenge::RosOdometryPublisher* odometry_publisher, const ClockPublisher::SharedPtr& clock_publisher, const std::shared_ptr<tf2_ros::StaticTransformBroadcaster>& static_tf_broadcaster)
 {
   std::unique_ptr<xchallenge::MujocoLidar3d> lidar;
+  std::unique_ptr<xchallenge::MujocoOdometry> odometry;
 
   // request loadmodel if file given (otherwise drag-and-drop)
   if (filename != nullptr)
@@ -661,6 +715,28 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
         }
       }
 
+      if (odometry_config.enabled)
+      {
+        if (odometry_publisher == nullptr)
+        {
+          std::cerr << "[Odometry] Enabled, but ROS publisher is not available." << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+
+        try
+        {
+          odometry = std::make_unique<xchallenge::MujocoOdometry>(m, odometry_config);
+          std::cout << "[Odometry] Bound to body '" << odometry_config.body_name << "', topic '" << odometry_config.topic << "', '" << odometry_config.frame_id << "' -> '" << odometry_config.child_frame_id << "' @ " << odometry_config.rate_hz << " Hz" << (odometry_config.publish_tf ? " with TF." : " without TF.") << std::endl;
+        }
+        catch (const std::exception& error)
+        {
+          std::cerr << "[Odometry] Initialization failed: " << error.what() << std::endl;
+          sim->exitrequest.store(1);
+          return;
+        }
+      }
+
       if (camera_bridge != nullptr) {
         camera_bridge->Bind(m, d, &sim->mtx);
       }
@@ -676,7 +752,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
     }
   }
 
-  PhysicsLoop(*sim, lidar.get(), lidar_publisher, clock_publisher);
+  PhysicsLoop(*sim, lidar.get(), lidar_publisher, odometry.get(), odometry_publisher, clock_publisher);
 }
 
 void *UnitreeSdk2BridgeThread(void *arg)
@@ -776,6 +852,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
     if(key==GLFW_KEY_BACKSPACE && m != nullptr && d != nullptr) {
       mj_resetData(m, d);
       mj_forward(m, d);
+      lowcmd_active.store(false);
     }
   }
 }
@@ -824,7 +901,8 @@ int main(int argc, char **argv)
   auto simulation_ros_node = std::make_shared<rclcpp::Node>("xchallenge_simulation");
   auto camera_ros_node = std::make_shared<rclcpp::Node>("xchallenge_realsense_camera");
   auto lidar_ros_node = std::make_shared<rclcpp::Node>("xchallenge_lidar");
-  
+  auto odometry_ros_node = std::make_shared<rclcpp::Node>("xchallenge_odometry");
+
   auto clock_publisher = simulation_ros_node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
   auto static_tf_broadcaster = std::make_shared<tf2_ros::StaticTransformBroadcaster>(*simulation_ros_node);
 
@@ -854,6 +932,38 @@ int main(int argc, char **argv)
       std::cerr << "[LiDAR] Failed to create ROS publisher: " << error.what() << std::endl;
       static_tf_broadcaster.reset();
       clock_publisher.reset();
+      odometry_ros_node.reset();
+      lidar_ros_node.reset();
+      camera_ros_node.reset();
+      simulation_ros_node.reset();
+      rclcpp::shutdown();
+      return 1;
+    }
+  }
+
+  xchallenge::OdometryConfig odometry_config;
+  odometry_config.enabled = param::config.odometry_enabled;
+  odometry_config.body_name = param::config.odometry_body_name;
+  odometry_config.frame_id = param::config.odometry_frame_id;
+  odometry_config.child_frame_id = param::config.odometry_child_frame_id;
+  odometry_config.topic = param::config.odometry_topic;
+  odometry_config.rate_hz = param::config.odometry_rate_hz;
+  odometry_config.publish_tf = param::config.odometry_publish_tf;
+
+  std::unique_ptr<xchallenge::RosOdometryPublisher> odometry_publisher;
+  if (odometry_config.enabled)
+  {
+    try
+    {
+      odometry_publisher = std::make_unique<xchallenge::RosOdometryPublisher>(odometry_ros_node, odometry_config);
+    }
+    catch (const std::exception& error)
+    {
+      std::cerr << "[Odometry] Failed to create ROS publisher: " << error.what() << std::endl;
+      lidar_publisher.reset();
+      static_tf_broadcaster.reset();
+      clock_publisher.reset();
+      odometry_ros_node.reset();
       lidar_ros_node.reset();
       camera_ros_node.reset();
       simulation_ros_node.reset();
@@ -887,7 +997,7 @@ int main(int argc, char **argv)
   });
 
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge, lidar_config, lidar_publisher.get(), clock_publisher, static_tf_broadcaster);  // start simulation UI loop (blocking call)
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge, lidar_config, lidar_publisher.get(), odometry_config, odometry_publisher.get(), clock_publisher, static_tf_broadcaster);  // start simulation UI loop (blocking call)
   keyboard_simulation_mutex = &sim->mtx;
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_, user_key_cb);
   
@@ -925,6 +1035,11 @@ int main(int argc, char **argv)
   lidar_publisher.reset();
   lidar_ros_node.reset();
   std::cerr << "[Shutdown] LiDAR publisher and node destroyed." << std::endl;
+
+  std::cerr << "[Shutdown] Destroying odometry publisher and node..." << std::endl;
+  odometry_publisher.reset();
+  odometry_ros_node.reset();
+  std::cerr << "[Shutdown] Odometry publisher and node destroyed." << std::endl;
 
   std::cerr << "[Shutdown] Destroying ROS camera node..." << std::endl;
   camera_ros_node.reset();

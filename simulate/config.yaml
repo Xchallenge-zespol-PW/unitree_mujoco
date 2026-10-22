@@ -1,7 +1,7 @@
 robot: "g1"
 robot_scene: "scene.xml"
 
-domain_id: 1
+domain_id: 0
 interface: "lo"
 idl_type: -1
 
@@ -10,9 +10,13 @@ joystick_type: "xbox"
 joystick_device: "/dev/input/js0"
 joystick_bits: 16
 
-print_scene_information: 1
+print_scene_information: 0
 
 enable_elastic_band: 0
+
+# Freeze the robot in its initial pose until a controller sends a non-zero rt/lowcmd
+# (any kp, kd or tau). Sim time, /clock and sensors keep running while held.
+hold_until_lowcmd: 1
 
 lidar:
   enabled: true
@@ -27,3 +31,14 @@ lidar:
   range_max_m: 20.0
   rate_hz: 5.0
   exclude_mount_body: true
+
+# Ground-truth odometry of a free-floating body (nav_msgs/Odometry + TF frame_id -> child_frame_id).
+# odom starts at the body's initial x, y and yaw (re-zeroed on reset); z, roll and pitch stay absolute.
+odometry:
+  enabled: true
+  body_name: pelvis
+  frame_id: odom
+  child_frame_id: pelvis
+  topic: /odom
+  rate_hz: 50.0
+  publish_tf: true

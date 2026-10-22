@@ -19,6 +19,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -99,6 +100,32 @@ ament_target_dependencies(xchallenge_lidar
 )
 
 # -----------------------------------------------------------------------------
+# Body odometry
+# -----------------------------------------------------------------------------
+
+add_library(xchallenge_odometry STATIC
+  src/odometry/mujoco_odometry.cpp
+  src/odometry/ros_odometry_publisher.cpp
+)
+
+target_include_directories(xchallenge_odometry
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/mujoco/include
+)
+
+target_link_libraries(xchallenge_odometry
+  mujoco
+)
+
+ament_target_dependencies(xchallenge_odometry
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  tf2_ros
+)
+
+# -----------------------------------------------------------------------------
 # Global link dependencies
 # -----------------------------------------------------------------------------
 
@@ -124,6 +151,7 @@ add_executable(unitree_mujoco
 target_link_libraries(unitree_mujoco
   xchallenge_realsense_camera
   xchallenge_lidar
+  xchallenge_odometry
 )
 
 ament_target_dependencies(unitree_mujoco

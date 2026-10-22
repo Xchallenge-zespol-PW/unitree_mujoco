@@ -9,12 +9,16 @@
 #include <unitree/idl/hg/BmsState_.hpp>
 #include <unitree/idl/hg/IMUState_.hpp>
 
+#include <atomic>
 #include <iostream>
 
 #include "param.h"
 #include "physics_joystick.h"
 
 #define MOTOR_SENSOR_NUM 3
+
+// Set once a controller sends a lowcmd with any non-zero kp, kd or tau; cleared on reset.
+inline std::atomic<bool> lowcmd_active{false};
 
 class UnitreeSDK2BridgeBase
 {
@@ -188,12 +192,15 @@ public:
         // lowcmd
         {
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+            bool active = false;
             for(int i(0); i<num_motor_; i++) {
                 auto & m = lowcmd->msg_.motor_cmd()[i];
                 mj_data_->ctrl[i] = m.tau() +
                                     m.kp() * (m.q() - mj_data_->sensordata[i]) +
                                     m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+                active = active || m.kp() != 0 || m.kd() != 0 || m.tau() != 0;
             }
+            if(active) { lowcmd_active.store(true); }
         }
 
         // lowstate

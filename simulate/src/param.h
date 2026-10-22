@@ -61,6 +61,8 @@ inline struct SimulationConfig
     int enable_elastic_band;
     int band_attached_link = 0;
 
+    int hold_until_lowcmd = 0;
+
     bool lidar_enabled = false;
     std::string lidar_site_name = "lidar_site";
     std::string lidar_frame_id = "lidar_frame";
@@ -73,6 +75,14 @@ inline struct SimulationConfig
     double lidar_range_max_m = 20.0;
     double lidar_rate_hz = 5.0;
     bool lidar_exclude_mount_body = true;
+
+    bool odometry_enabled = false;
+    std::string odometry_body_name = "pelvis";
+    std::string odometry_frame_id = "odom";
+    std::string odometry_child_frame_id = "pelvis";
+    std::string odometry_topic = "/odom";
+    double odometry_rate_hz = 50.0;
+    bool odometry_publish_tf = true;
 
     void load_from_yaml(const std::string &filename)
     {
@@ -93,6 +103,10 @@ inline struct SimulationConfig
             joystick_bits = cfg["joystick_bits"].as<int>();
             print_scene_information = cfg["print_scene_information"].as<int>();
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
+            if (cfg["hold_until_lowcmd"])
+            {
+                hold_until_lowcmd = cfg["hold_until_lowcmd"].as<int>();
+            }
 
             if (cfg["lidar"])
             {
@@ -109,6 +123,18 @@ inline struct SimulationConfig
                 if (lidar["range_max_m"]) lidar_range_max_m = lidar["range_max_m"].as<double>();
                 if (lidar["rate_hz"]) lidar_rate_hz = lidar["rate_hz"].as<double>();
                 if (lidar["exclude_mount_body"]) lidar_exclude_mount_body = lidar["exclude_mount_body"].as<bool>();
+            }
+
+            if (cfg["odometry"])
+            {
+                const auto odometry = cfg["odometry"];
+                if (odometry["enabled"]) odometry_enabled = odometry["enabled"].as<bool>();
+                if (odometry["body_name"]) odometry_body_name = odometry["body_name"].as<std::string>();
+                if (odometry["frame_id"]) odometry_frame_id = odometry["frame_id"].as<std::string>();
+                if (odometry["child_frame_id"]) odometry_child_frame_id = odometry["child_frame_id"].as<std::string>();
+                if (odometry["topic"]) odometry_topic = odometry["topic"].as<std::string>();
+                if (odometry["rate_hz"]) odometry_rate_hz = odometry["rate_hz"].as<double>();
+                if (odometry["publish_tf"]) odometry_publish_tf = odometry["publish_tf"].as<bool>();
             }
         }
         catch(const std::exception& e)

@@ -175,31 +175,34 @@
 
   <!-- BANER / STREFY NA BLACIE (z minimalnym offsetem Z dla uniknięcia z-fightingu) -->
 
-  <!-- Strefa Czerwona (Szerokość 80 cm, lewa strona) -->
-  <geom name="strefa_czerwona" type="box" size="0.40 0.40 0.0005" pos="-0.50 0 0.7201" material="mat_red_zone"/>
+  <!-- Strefa Czerwona (Szerokość 64 cm, lewa strona) -->
+  <geom name="strefa_czerwona" type="box" size="0.32 0.40 0.0005" pos=" 0.58 0 0.7201" material="mat_red_zone"/>
 
-  <!-- Strefa Zielona (Szerokość 80 cm, prawa strona) -->
-  <geom name="strefa_zielona" type="box" size="0.40 0.40 0.0005" pos=" 0.50 0 0.7201" material="mat_green_zone"/>
+  <!-- Strefa Zielona (Szerokość 64 cm, prawa strona) -->
+  <geom name="strefa_zielona" type="box" size="0.32 0.40 0.0005" pos="-0.58 0 0.7201" material="mat_green_zone"/>
 
-  <!-- Biała strefa początkowa w środku (Szerokość 20 cm) -->
-  <geom name="strefa_startowa" type="box" size="0.10 0.40 0.0006" pos="0 0 0.7202" material="mat_white_zone"/>
+  <!-- Biała strefa początkowa w środku (Szerokość 50 cm) -->
+  <geom name="strefa_startowa" type="box" size="0.25 0.40 0.0006" pos="0 0 0.7202" material="mat_white_zone"/>
+
+  <geom name="linia_czerwona" type="box" size="0.005 0.40 0.0007" pos=" 0.255 0 0.7203" material="mat_black_line"/>
+  <geom name="linia_zielona" type="box" size="0.005 0.40 0.0007" pos="-0.255 0 0.7203" material="mat_black_line"/>
 
   <!-- 4 Miejsca na sześciany (kostki 5x5 cm z czarną linią obramowania o grubości 1 cm) -->
   <!-- Kostka 1 -->
-  <geom type="box" size="0.035 0.035 0.0007" pos="0  0.105 0.7203" material="mat_black_line"/>
-  <geom type="box" size="0.025 0.025 0.0008" pos="0  0.105 0.7204" material="mat_white_zone"/>
+  <geom type="box" size="0.035 0.035 0.0007" pos="0  0.09 0.7203" material="mat_black_line"/>
+  <geom type="box" size="0.025 0.025 0.0008" pos="0  0.09 0.7204" material="mat_white_zone"/>
 
   <!-- Kostka 2 -->
-  <geom type="box" size="0.035 0.035 0.0007" pos="0  0.035 0.7203" material="mat_black_line"/>
-  <geom type="box" size="0.025 0.025 0.0008" pos="0  0.035 0.7204" material="mat_white_zone"/>
+  <geom type="box" size="0.035 0.035 0.0007" pos="0  0.03 0.7203" material="mat_black_line"/>
+  <geom type="box" size="0.025 0.025 0.0008" pos="0  0.03 0.7204" material="mat_white_zone"/>
 
   <!-- Kostka 3 -->
-  <geom type="box" size="0.035 0.035 0.0007" pos="0 -0.035 0.7203" material="mat_black_line"/>
-  <geom type="box" size="0.025 0.025 0.0008" pos="0 -0.035 0.7204" material="mat_white_zone"/>
+  <geom type="box" size="0.035 0.035 0.0007" pos="0 -0.03 0.7203" material="mat_black_line"/>
+  <geom type="box" size="0.025 0.025 0.0008" pos="0 -0.03 0.7204" material="mat_white_zone"/>
 
   <!-- Kostka 4 -->
-  <geom type="box" size="0.035 0.035 0.0007" pos="0 -0.105 0.7203" material="mat_black_line"/>
-  <geom type="box" size="0.025 0.025 0.0008" pos="0 -0.105 0.7204" material="mat_white_zone"/>
+  <geom type="box" size="0.035 0.035 0.0007" pos="0 -0.09 0.7203" material="mat_black_line"/>
+  <geom type="box" size="0.025 0.025 0.0008" pos="0 -0.09 0.7204" material="mat_white_zone"/>
 
 </body>
 

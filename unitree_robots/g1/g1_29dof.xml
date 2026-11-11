@@ -292,20 +292,20 @@
                           rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <body name="left_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0706237 0.00169676 0.000280199"
-                            quat="0.495089 -0.49948 -0.497093 0.508238" mass="0.162576"
-                            diaginertia="0.00106652 0.00103755 6.20038e-05" />
+                          <inertial pos="0.0713434 0.00169676 0.000280199"
+                            quat="0.495067 -0.499493 -0.497107 0.508233" mass="0.162576"
+                            diaginertia="0.00107895 0.00104998 6.20021e-05" />
                           <joint name="left_wrist_yaw_joint" pos="0 0 0" axis="0 0 1"
                             range="-1.61443 1.61443" actuatorfrcrange="-5 5" class="wrist_motor" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0"
                             rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
-                          <geom pos="0.04 -0.011 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
+                          <geom pos="0.0415 -0.011 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
                             conaffinity="0" group="1" density="0" rgba="1 0.45 0 1"
                             mesh="g1_adapter" />
-                          <geom name="left_adapter_mount" type="box" pos="0.04055 0.003 0"
+                          <geom name="left_adapter_mount" type="box" pos="0.04205 0.003 0"
                             size="0.01295 0.014 0.02075" group="3" />
-                          <geom name="left_adapter_plate" type="box" pos="0.175 0.003 0"
+                          <geom name="left_adapter_plate" type="box" pos="0.1765 0.003 0"
                             size="0.1215 0.002 0.02" group="3" />
                         </body>
                       </body>
@@ -372,20 +372,20 @@
                           rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <body name="right_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0706237 -0.00169676 0.000280199"
-                            quat="0.508238 -0.497093 -0.49948 0.495089" mass="0.162576"
-                            diaginertia="0.00106652 0.00103755 6.20038e-05" />
+                          <inertial pos="0.0713434 -0.00169676 0.000280199"
+                            quat="0.508233 -0.497107 -0.499493 0.495067" mass="0.162576"
+                            diaginertia="0.00107895 0.00104998 6.20021e-05" />
                           <joint name="right_wrist_yaw_joint" pos="0 0 0" axis="0 0 1"
                             range="-1.61443 1.61443" actuatorfrcrange="-5 5" class="wrist_motor" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0"
                             rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />
-                          <geom pos="0.04 -0.017 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
+                          <geom pos="0.0415 -0.017 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
                             conaffinity="0" group="1" density="0" rgba="1 0.45 0 1"
                             mesh="g1_adapter" />
-                          <geom name="right_adapter_mount" type="box" pos="0.04055 -0.003 0"
+                          <geom name="right_adapter_mount" type="box" pos="0.04205 -0.003 0"
                             size="0.01295 0.014 0.02075" group="3" />
-                          <geom name="right_adapter_plate" type="box" pos="0.175 -0.003 0"
+                          <geom name="right_adapter_plate" type="box" pos="0.1765 -0.003 0"
                             size="0.1215 0.002 0.02" group="3" />
                         </body>
                       </body>

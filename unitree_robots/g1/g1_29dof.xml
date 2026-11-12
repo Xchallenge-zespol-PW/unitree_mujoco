@@ -48,7 +48,7 @@
     <mesh name="left_wrist_roll_link" file="left_wrist_roll_link.STL" />
     <mesh name="left_wrist_pitch_link" file="left_wrist_pitch_link.STL" />
     <mesh name="left_wrist_yaw_link" file="left_wrist_yaw_link.STL" />
-    <mesh name="left_rubber_hand" file="left_rubber_hand.STL" />
+    <mesh name="g1_adapter" file="G1_Adapter.stl" scale="0.001 0.001 0.001" />
     <mesh name="right_shoulder_pitch_link" file="right_shoulder_pitch_link.STL" />
     <mesh name="right_shoulder_roll_link" file="right_shoulder_roll_link.STL" />
     <mesh name="right_shoulder_yaw_link" file="right_shoulder_yaw_link.STL" />
@@ -56,13 +56,14 @@
     <mesh name="right_wrist_roll_link" file="right_wrist_roll_link.STL" />
     <mesh name="right_wrist_pitch_link" file="right_wrist_pitch_link.STL" />
     <mesh name="right_wrist_yaw_link" file="right_wrist_yaw_link.STL" />
-    <mesh name="right_rubber_hand" file="right_rubber_hand.STL" />
 
     <model name="d435i_model" file="../common/realsense_d435i/d435i_xchallenge.xml" />
   </asset>
 
   <worldbody>
-    <body name="pelvis" pos="0 -3.4 0.8" quat="0.7071068 0 0 -0.707106">
+    <!-- Task 1 start: after its release the policy lands the robot about (-0.028, -0.045) m and +13.2 deg off,
+         so it starts turned and offset to stand facing the table with the pelvis 12 cm from its edge. -->
+    <body name="pelvis" pos="0.0374 -3.6175 0.8" quat="0.621148 0 0 -0.783693">
       <site name="imu" size="0.01" pos="0.0 0.0 0.0" />
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813"
         diaginertia="0.010549 0.0093089 0.0079184" />
@@ -293,17 +294,21 @@
                           rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_pitch_link" />
                         <body name="left_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0708244 0.000191745 0.00161742"
-                            quat="0.510571 0.526295 0.468078 0.493188" mass="0.254576"
-                            diaginertia="0.000646113 0.000559993 0.000147566" />
+                          <inertial pos="0.0713434 0.00169676 0.000280199"
+                            quat="0.495067 -0.499493 -0.497107 0.508233" mass="0.162576"
+                            diaginertia="0.00107895 0.00104998 6.20021e-05" />
                           <joint name="left_wrist_yaw_joint" pos="0 0 0" axis="0 0 1"
                             range="-1.61443 1.61443" actuatorfrcrange="-5 5" class="wrist_motor" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0"
                             rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="left_wrist_yaw_link" />
-                          <geom pos="0.0415 0.003 0" quat="1 0 0 0" type="mesh" contype="0"
-                            conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1"
-                            mesh="left_rubber_hand" />
+                          <geom pos="0.0415 -0.011 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
+                            conaffinity="0" group="1" density="0" rgba="1 0.45 0 1"
+                            mesh="g1_adapter" />
+                          <geom name="left_adapter_mount" type="box" pos="0.04205 0.003 0"
+                            size="0.01295 0.014 0.02075" group="3" />
+                          <geom name="left_adapter_plate" type="box" pos="0.1765 0.003 0"
+                            size="0.1215 0.002 0.02" group="3" />
                         </body>
                       </body>
                     </body>
@@ -369,17 +374,21 @@
                           rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_pitch_link" />
                         <body name="right_wrist_yaw_link" pos="0.046 0 0">
-                          <inertial pos="0.0708244 -0.000191745 0.00161742"
-                            quat="0.493188 0.468078 0.526295 0.510571" mass="0.254576"
-                            diaginertia="0.000646113 0.000559993 0.000147566" />
+                          <inertial pos="0.0713434 -0.00169676 0.000280199"
+                            quat="0.508233 -0.497107 -0.499493 0.495067" mass="0.162576"
+                            diaginertia="0.00107895 0.00104998 6.20021e-05" />
                           <joint name="right_wrist_yaw_joint" pos="0 0 0" axis="0 0 1"
                             range="-1.61443 1.61443" actuatorfrcrange="-5 5" class="wrist_motor" />
                           <geom type="mesh" contype="0" conaffinity="0" group="1" density="0"
                             rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />
                           <geom type="mesh" rgba="0.7 0.7 0.7 1" mesh="right_wrist_yaw_link" />
-                          <geom pos="0.0415 -0.003 0" quat="1 0 0 0" type="mesh" contype="0"
-                            conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 1"
-                            mesh="right_rubber_hand" />
+                          <geom pos="0.0415 -0.017 -0.02075" quat="0.707107 0 -0.707107 0" type="mesh" contype="0"
+                            conaffinity="0" group="1" density="0" rgba="1 0.45 0 1"
+                            mesh="g1_adapter" />
+                          <geom name="right_adapter_mount" type="box" pos="0.04205 -0.003 0"
+                            size="0.01295 0.014 0.02075" group="3" />
+                          <geom name="right_adapter_plate" type="box" pos="0.1765 -0.003 0"
+                            size="0.1215 0.002 0.02" group="3" />
                         </body>
                       </body>
                     </body>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -20,6 +21,7 @@ namespace xchallenge {
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
         nav_msgs::msg::Odometry message_;
         geometry_msgs::msg::TransformStamped transform_;
+        std::vector<geometry_msgs::msg::TransformStamped> transforms_;
     };
 
 }

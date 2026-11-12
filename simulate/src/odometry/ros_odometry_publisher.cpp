@@ -59,10 +59,24 @@ namespace xchallenge {
         transform_.transform.translation.z = pose.position.z;
         transform_.transform.rotation = pose.orientation;
 
+        // One message with one stamp, so that lookups between the pelvis and the bodies find a common time.
+        transforms_.assign(1, transform_);
+        for (const BodyPose& body : frame.extra_bodies) {
+            auto& transform = transforms_.emplace_back(transform_);
+            transform.child_frame_id = body.name;
+            transform.transform.translation.x = body.position[0];
+            transform.transform.translation.y = body.position[1];
+            transform.transform.translation.z = body.position[2];
+            transform.transform.rotation.w = body.orientation[0];
+            transform.transform.rotation.x = body.orientation[1];
+            transform.transform.rotation.y = body.orientation[2];
+            transform.transform.rotation.z = body.orientation[3];
+        }
+
         try {
             publisher_->publish(message_);
             if (tf_broadcaster_) {
-                tf_broadcaster_->sendTransform(transform_);
+                tf_broadcaster_->sendTransform(transforms_);
             }
         } catch (const rclcpp::exceptions::RCLError&) {
             // SIGINT can shut down ROS between the check above and publish().

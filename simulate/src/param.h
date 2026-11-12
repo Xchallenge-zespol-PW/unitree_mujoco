@@ -5,6 +5,7 @@
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <stdexcept>
+#include <vector>
 
 namespace param
 {
@@ -83,6 +84,7 @@ inline struct SimulationConfig
     std::string odometry_topic = "/odom";
     double odometry_rate_hz = 50.0;
     bool odometry_publish_tf = true;
+    std::vector<std::string> odometry_extra_bodies;
 
     void load_from_yaml(const std::string &filename)
     {
@@ -135,6 +137,7 @@ inline struct SimulationConfig
                 if (odometry["topic"]) odometry_topic = odometry["topic"].as<std::string>();
                 if (odometry["rate_hz"]) odometry_rate_hz = odometry["rate_hz"].as<double>();
                 if (odometry["publish_tf"]) odometry_publish_tf = odometry["publish_tf"].as<bool>();
+                if (odometry["extra_bodies"]) odometry_extra_bodies = odometry["extra_bodies"].as<std::vector<std::string>>();
             }
         }
         catch(const std::exception& e)

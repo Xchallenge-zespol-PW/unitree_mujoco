@@ -3,6 +3,7 @@
 #include <array>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include <mujoco/mujoco.h>
 
@@ -16,6 +17,14 @@ namespace xchallenge {
         std::string topic = "/odom";
         double rate_hz = 50.0;
         bool publish_tf = true;
+        // Free bodies published as TF frame_id -> <body name>; those missing from the scene are skipped.
+        std::vector<std::string> extra_bodies;
+    };
+
+    struct BodyPose {
+        std::string name;
+        std::array<double, 3> position{};
+        std::array<double, 4> orientation{1.0, 0.0, 0.0, 0.0};
     };
 
     struct OdometryFrame {
@@ -26,6 +35,7 @@ namespace xchallenge {
         // Expressed in the body (child) frame, as nav_msgs/Odometry requires.
         std::array<double, 3> linear_velocity{};
         std::array<double, 3> angular_velocity{};
+        std::vector<BodyPose> extra_bodies;
     };
 
     // Ground-truth odometry of a free-floating body.
@@ -41,10 +51,14 @@ namespace xchallenge {
         const OdometryFrame& Frame() const { return frame_; }
 
     private:
+        void ToOdom(const mjtNum* position, const mjtNum* orientation,
+                    std::array<double, 3>& odom_position, std::array<double, 4>& odom_orientation) const;
+
         const mjModel* model_;
         OdometryConfig config_;
         int qpos_adr_ = -1;
         int qvel_adr_ = -1;
+        std::vector<int> extra_qpos_adr_;
         bool origin_set_ = false;
         std::array<mjtNum, 3> origin_position_{};
         std::array<mjtNum, 4> origin_yaw_inverse_{1.0, 0.0, 0.0, 0.0};

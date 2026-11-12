@@ -42,3 +42,5 @@ odometry:
   topic: /odom
   rate_hz: 50.0
   publish_tf: true
+  # Cubes of task 1 (round1.xml) for xchallenge_tasks sim_cube_perception.py
+  extra_bodies: [red_cube_1, red_cube_2, green_cube_1, green_cube_2]

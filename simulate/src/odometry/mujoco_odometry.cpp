@@ -22,6 +22,23 @@ MujocoOdometry::MujocoOdometry(const mjModel* model, OdometryConfig config)
     }
     qpos_adr_ = model_->jnt_qposadr[joint_id];
     qvel_adr_ = model_->jnt_dofadr[joint_id];
+
+    for (const std::string& name : config_.extra_bodies) {
+        const int id = mj_name2id(model_, mjOBJ_BODY, name.c_str());
+        if (id >= 0 && model_->body_jntnum[id] > 0 && model_->jnt_type[model_->body_jntadr[id]] == mjJNT_FREE) {
+            extra_qpos_adr_.push_back(model_->jnt_qposadr[model_->body_jntadr[id]]);
+            frame_.extra_bodies.push_back({name});
+        }
+    }
+}
+
+void MujocoOdometry::ToOdom(const mjtNum* position, const mjtNum* orientation,
+                            std::array<double, 3>& odom_position, std::array<double, 4>& odom_orientation) const {
+    mjtNum offset[3];
+    mju_sub3(offset, position, origin_position_.data());
+    mju_rotVecQuat(odom_position.data(), offset, origin_yaw_inverse_.data());
+    mju_mulQuat(odom_orientation.data(), origin_yaw_inverse_.data(), orientation);
+    mju_normalize4(odom_orientation.data());
 }
 
 bool MujocoOdometry::CaptureIfDue(const mjData* data) {
@@ -73,6 +90,10 @@ bool MujocoOdometry::CaptureIfDue(const mjData* data) {
     }
     for (int i = 0; i < 4; ++i) {
         frame_.orientation[i] = odom_orientation[i];
+    }
+    for (std::size_t i = 0; i < extra_qpos_adr_.size(); ++i) {
+        const mjtNum* qpos = data->qpos + extra_qpos_adr_[i];
+        ToOdom(qpos, qpos + 3, frame_.extra_bodies[i].position, frame_.extra_bodies[i].orientation);
     }
 
     next_capture_time_ = stamp + 1.0 / config_.rate_hz;

@@ -728,6 +728,10 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
         {
           odometry = std::make_unique<xchallenge::MujocoOdometry>(m, odometry_config);
           std::cout << "[Odometry] Bound to body '" << odometry_config.body_name << "', topic '" << odometry_config.topic << "', '" << odometry_config.frame_id << "' -> '" << odometry_config.child_frame_id << "' @ " << odometry_config.rate_hz << " Hz" << (odometry_config.publish_tf ? " with TF." : " without TF.") << std::endl;
+          for (const auto& body : odometry->Frame().extra_bodies)
+          {
+            std::cout << "[Odometry] Ground truth of body '" << body.name << "' as TF." << std::endl;
+          }
         }
         catch (const std::exception& error)
         {
@@ -949,6 +953,7 @@ int main(int argc, char **argv)
   odometry_config.topic = param::config.odometry_topic;
   odometry_config.rate_hz = param::config.odometry_rate_hz;
   odometry_config.publish_tf = param::config.odometry_publish_tf;
+  odometry_config.extra_bodies = param::config.odometry_extra_bodies;
 
   std::unique_ptr<xchallenge::RosOdometryPublisher> odometry_publisher;
   if (odometry_config.enabled)

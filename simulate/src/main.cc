@@ -28,9 +28,11 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <set>
 #include <thread>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -407,9 +409,77 @@ namespace
     std::cout << "[TF] Published static transform '" << transform.header.frame_id << "' -> '" << transform.child_frame_id << "' from MuJoCo site '" << lidar_config.site_name << "'." << std::endl;
   }
 
+  // Lockstep: waits up to this long for the command of the last state, then steps on. Long: the
+  // controller manager stalls while it switches controllers or the CPU is busy, and waiting is the point.
+  constexpr std::chrono::milliseconds kLockstepTimeout{2000};
+  // Without a controller: a short look each step, still longer than a controller manager cycle (2 ms),
+  // so that a controller that answers again brings the lockstep back.
+  constexpr std::chrono::milliseconds kLockstepFreeTimeout{5};
+  bool lockstep_free = false;
+  // Lockstep statistics, printed every kLockstepReport of wall time.
+  constexpr std::chrono::seconds kLockstepReport{10};
+  std::chrono::steady_clock::time_point lockstep_report_time{};
+  int lockstep_steps = 0, lockstep_timeouts = 0;
+  double lockstep_wait_sum = 0.0, lockstep_wait_max = 0.0;
+
+  void LogRobotContacts();
+
+  // Kinematic base: latest velocity command (robot frame) and when it came.
+  struct KinematicCommand
+  {
+    std::mutex mutex;
+    double vx = 0.0, vy = 0.0, wz = 0.0;
+    std::chrono::steady_clock::time_point stamp{};
+  } kinematic_command;
+  int kinematic_mocap = -2;
+
+  // Moves the mocap body of the kinematic base by the commanded velocity over one time step.
+  void MoveKinematicBase()
+  {
+    if (kinematic_mocap == -2)
+    {
+      const int body = mj_name2id(m, mjOBJ_BODY, param::config.kinematic_base_body.c_str());
+      kinematic_mocap = body >= 0 ? m->body_mocapid[body] : -1;
+      std::cout << (kinematic_mocap >= 0 ? "[KinematicBase] Pelvis follows '" + param::config.kinematic_base_body + "' on " + param::config.kinematic_base_topic
+                                         : "[KinematicBase] No mocap body '" + param::config.kinematic_base_body + "' in the model: off") << std::endl;
+    }
+    if (kinematic_mocap < 0)
+    {
+      return;
+    }
+    double vx, vy, wz;
+    {
+      std::lock_guard<std::mutex> lock(kinematic_command.mutex);
+      const std::chrono::duration<double> age = std::chrono::steady_clock::now() - kinematic_command.stamp;
+      const bool fresh = age.count() < param::config.kinematic_base_timeout;
+      vx = fresh ? kinematic_command.vx : 0.0;
+      vy = fresh ? kinematic_command.vy : 0.0;
+      wz = fresh ? kinematic_command.wz : 0.0;
+    }
+    mjtNum* pos = d->mocap_pos + 3 * kinematic_mocap;
+    mjtNum* quat = d->mocap_quat + 4 * kinematic_mocap;
+    double yaw = std::atan2(2 * (quat[0] * quat[3] + quat[1] * quat[2]), 1 - 2 * (quat[2] * quat[2] + quat[3] * quat[3]));
+    const double dt = m->opt.timestep;
+    pos[0] += (std::cos(yaw) * vx - std::sin(yaw) * vy) * dt;
+    pos[1] += (std::sin(yaw) * vx + std::cos(yaw) * vy) * dt;
+    yaw += wz * dt;
+    quat[0] = std::cos(yaw / 2);
+    quat[1] = 0.0;
+    quat[2] = 0.0;
+    quat[3] = std::sin(yaw / 2);
+  }
+
   // advance one timestep; while held, time and sensors advance but the state is not integrated
   void Step(bool held)
   {
+    UnitreeSDK2BridgeBase* bridge = active_bridge.load();
+    const bool lockstep = param::config.lockstep == 1 && bridge != nullptr;
+
+    if (bridge != nullptr)
+    {
+      bridge->ApplyCommand();
+    }
+
     if (held)
     {
       mju_zero(d->qvel, m->nv);
@@ -418,8 +488,142 @@ namespace
     }
     else
     {
+      if (param::config.kinematic_base_enabled)
+      {
+        MoveKinematicBase();
+      }
       mj_step(m, d);
+      LogRobotContacts();
     }
+
+    if (lockstep)
+    {
+      bridge->PublishState();
+    }
+  }
+
+  // Lockstep: waits, WITHOUT the simulation mutex (rendering and the UI go on), until the controller
+  // answered the state published after the last step (lowcmd reserve[0] = its tick). The state is sent
+  // again every 2 ms meanwhile, in case DDS dropped it.
+  uint32_t lockstep_waited_tick = 0;
+
+  void WaitForCommand(UnitreeSDK2BridgeBase* bridge)
+  {
+    const uint32_t tick = bridge->StateTick();
+    // No new state since the last wait (the simulation was ahead of the real time): nothing to wait for.
+    if (tick == lockstep_waited_tick && bridge->CommandTick() >= tick)
+    {
+      return;
+    }
+    lockstep_waited_tick = tick;
+    const auto wait_start = std::chrono::steady_clock::now();
+    const auto deadline = wait_start + (lockstep_free ? kLockstepFreeTimeout : kLockstepTimeout);
+    auto last_publish = wait_start;
+    bool answered = false;
+    while (!(answered = bridge->CommandTick() >= tick) && std::chrono::steady_clock::now() < deadline)
+    {
+      std::this_thread::sleep_for(std::chrono::microseconds(20));
+      if (std::chrono::steady_clock::now() - last_publish > std::chrono::milliseconds(2))
+      {
+        bridge->RepublishState();
+        last_publish = std::chrono::steady_clock::now();
+      }
+    }
+    if (answered == lockstep_free)
+    {
+      lockstep_free = !answered;
+      std::cout << (answered ? "[Lockstep] Commands are back: stepping with the controller."
+                             : "[Lockstep] No command for the last state: stepping on without the controller.")
+                << " (state tick " << tick << ", command tick " << bridge->CommandTick() << ")" << std::endl;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const double waited = std::chrono::duration<double, std::milli>(now - wait_start).count();
+    ++lockstep_steps;
+    lockstep_timeouts += answered ? 0 : 1;
+    lockstep_wait_sum += waited;
+    lockstep_wait_max = std::max(lockstep_wait_max, waited);
+    if (now - lockstep_report_time > kLockstepReport)
+    {
+      if (lockstep_steps > 0 && lockstep_report_time.time_since_epoch().count() != 0)
+      {
+        std::cout << "[Lockstep] last " << kLockstepReport.count() << " s: " << lockstep_steps << " steps, wait for the controller mean "
+                  << lockstep_wait_sum / lockstep_steps << " ms, max " << lockstep_wait_max << " ms, unanswered "
+                  << lockstep_timeouts << std::endl;
+      }
+      lockstep_report_time = now;
+      lockstep_steps = lockstep_timeouts = 0;
+      lockstep_wait_sum = lockstep_wait_max = 0.0;
+    }
+  }
+
+  // Contacts of the robot (bodies under pelvis) with bodies whose names start with rack_, stand_ or
+  // wall: each pair is logged when it starts touching, with the wall-clock time for the task logs.
+  std::set<std::pair<int, int>> robot_contacts;
+  int contact_root = -2;
+
+  void LogRobotContacts()
+  {
+    if (contact_root == -2)
+    {
+      const int pelvis = mj_name2id(m, mjOBJ_BODY, "pelvis");
+      contact_root = pelvis >= 0 ? m->body_rootid[pelvis] : -1;
+    }
+    if (contact_root < 0)
+    {
+      return;
+    }
+    std::set<std::pair<int, int>> now_touching;
+    for (int i = 0; i < d->ncon; ++i)
+    {
+      const mjContact& c = d->contact[i];
+      int b1 = m->geom_bodyid[c.geom1], b2 = m->geom_bodyid[c.geom2];
+      int g_env = c.geom2;
+      if (m->body_rootid[b2] == contact_root)
+      {
+        std::swap(b1, b2);
+        g_env = c.geom1;
+      }
+      if (m->body_rootid[b1] != contact_root || m->body_rootid[b2] == contact_root)
+      {
+        continue;
+      }
+      const char* env = mj_id2name(m, mjOBJ_BODY, b2);
+      const std::string env_name = env ? env : "";
+      if (env_name.rfind("rack_", 0) != 0 && env_name.rfind("stand_", 0) != 0 && env_name.rfind("wall", 0) != 0)
+      {
+        continue;
+      }
+      const auto pair = std::make_pair(b1, g_env);
+      now_touching.insert(pair);
+      if (!robot_contacts.count(pair))
+      {
+        const double wall = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const char* robot = mj_id2name(m, mjOBJ_BODY, b1);
+        std::printf("[Contact] %.3f robot %s touches %s (geom %d) at sim %.3f s, depth %.1f mm\n", wall,
+                    robot ? robot : "?", env_name.c_str(), g_env, d->time, -1000.0 * c.dist);
+        std::fflush(stdout);
+      }
+    }
+    robot_contacts.swap(now_touching);
+  }
+
+  // Puts d into param::config.keyframe, when the model has it.
+  void ResetToKeyframe(const mjModel* model, mjData* data)
+  {
+    if (param::config.keyframe.empty())
+    {
+      return;
+    }
+    const int key = mj_name2id(model, mjOBJ_KEY, param::config.keyframe.c_str());
+    if (key < 0)
+    {
+      std::cerr << "[Keyframe] No keyframe '" << param::config.keyframe << "' in the model: starting from qpos0." << std::endl;
+      return;
+    }
+    mj_resetDataKeyframe(model, data, key);
+    mj_forward(model, data);
+    std::cout << "[Keyframe] Starting from keyframe '" << param::config.keyframe << "'." << std::endl;
   }
 
   // simulate in background thread (while rendering in main thread)
@@ -445,9 +649,18 @@ namespace
         sim.LoadMessageClear();
       }
 
+      // Lockstep with the controller once it took the robot: wait for its command outside the mutex,
+      // then one step per iteration.
+      UnitreeSDK2BridgeBase* lockstep_bridge = active_bridge.load();
+      const bool lockstep = param::config.lockstep == 1 && lockstep_bridge != nullptr && lowcmd_active.load() &&
+                            !held && sim.run;
+      if (lockstep)
+      {
+        WaitForCommand(lockstep_bridge);
+      }
       // sleep for 1 ms or yield, to let main thread run
       //  yield results in busy wait - which has better timing but kills battery life
-      if (sim.run && sim.busywait)
+      else if (sim.run && sim.busywait)
       {
         std::this_thread::yield();
       }
@@ -456,6 +669,8 @@ namespace
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
 
+      // lockstep and ahead of the real time: sleep after the mutex is released (rendering gets it)
+      bool lockstep_ahead = false;
       bool lidar_frame_ready = false;
       bool odometry_frame_ready = false;
       bool clock_ready = false;
@@ -512,8 +727,29 @@ namespace
             bool misaligned =
                 mju_abs(Seconds(elapsedCPU).count() / slowdown - elapsedSim) > syncMisalign;
 
+            // lockstep: one step, unless the simulation is ahead of the real time (times the slow-down)
+            if (lockstep)
+            {
+              if (elapsedSim < 0 || elapsedCPU.count() < 0 || syncCPU.time_since_epoch().count() == 0 ||
+                  misaligned || sim.speed_changed)
+              {
+                syncCPU = startCPU;
+                syncSim = d->time;
+                sim.speed_changed = false;
+              }
+              if (Seconds((d->time - syncSim) * slowdown) <= mj::Simulate::Clock::now() - syncCPU)
+              {
+                Step(held);
+                stepped = true;
+              }
+              else
+              {
+                lockstep_ahead = true;
+              }
+            }
+
             // out-of-sync (for any reason): reset sync times, step
-            if (elapsedSim < 0 || elapsedCPU.count() < 0 || syncCPU.time_since_epoch().count() == 0 ||
+            else if (elapsedSim < 0 || elapsedCPU.count() < 0 || syncCPU.time_since_epoch().count() == 0 ||
                 misaligned || sim.speed_changed)
             {
               // re-sync
@@ -637,6 +873,11 @@ namespace
         }
       }
 
+      if (lockstep_ahead)
+      {
+        std::this_thread::sleep_for(std::chrono::microseconds(500));
+      }
+
       if (lidar_frame_ready && lidar != nullptr && lidar_publisher != nullptr)
       {
         try
@@ -682,6 +923,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename, xchallenge::RealSens
       d = mj_makeData(m);
     if (d)
     {
+      ResetToKeyframe(m, d);
       sim->Load(m, d, filename);
       mj_forward(m, d);
 
@@ -807,12 +1049,14 @@ void *UnitreeSdk2BridgeThread(void *arg)
     interface = std::make_unique<Go2Bridge>(m, d);
   }
   interface->start();
+  active_bridge.store(interface.get());
   
   while (!sim->exitrequest.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
   std::cerr << "[Shutdown] Stopping Unitree bridge..." << std::endl;
+  active_bridge.store(nullptr);
 
   interface->stop();
 
@@ -855,6 +1099,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
     }
     if(key==GLFW_KEY_BACKSPACE && m != nullptr && d != nullptr) {
       mj_resetData(m, d);
+      ResetToKeyframe(m, d);
       mj_forward(m, d);
       lowcmd_active.store(false);
     }
@@ -986,9 +1231,39 @@ int main(int argc, char **argv)
 
   xchallenge::RealSenseCameraBridge camera_bridge("d435i_color", "d435i_depth", 320, 240, 30, camera_ros_node);  
   
-  if (!camera_bridge.Start()) {
+  if (param::config.camera_enabled && !camera_bridge.Start()) {
     std::cerr << "[main] Failed to start RealSense camera bridge." << std::endl;
     return 1;
+  }
+  if (!param::config.camera_enabled) {
+    std::cout << "[Camera] Disabled (config camera.enabled)." << std::endl;
+  }
+
+  // Kinematic base: /cmd_vel moves the pelvis (MoveKinematicBase), on its own node and thread.
+  std::shared_ptr<rclcpp::Node> kinematic_node;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr kinematic_subscription;
+  std::thread kinematic_thread;
+  if (param::config.kinematic_base_enabled)
+  {
+    kinematic_node = std::make_shared<rclcpp::Node>("xchallenge_kinematic_base");
+    kinematic_subscription = kinematic_node->create_subscription<geometry_msgs::msg::Twist>(
+        param::config.kinematic_base_topic, 10, [](const geometry_msgs::msg::Twist::SharedPtr msg) {
+          std::lock_guard<std::mutex> lock(kinematic_command.mutex);
+          kinematic_command.vx = msg->linear.x;
+          kinematic_command.vy = msg->linear.y;
+          kinematic_command.wz = msg->angular.z;
+          kinematic_command.stamp = std::chrono::steady_clock::now();
+        });
+    mj::Simulate* sim_raw = sim.get();
+    kinematic_thread = std::thread([kinematic_node, sim_raw]() {
+      rclcpp::executors::SingleThreadedExecutor executor;
+      executor.add_node(kinematic_node);
+      while (rclcpp::ok() && !sim_raw->exitrequest.load())
+      {
+        executor.spin_some(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    });
   }
 
   std::thread ros_shutdown_thread([&sim]() {
@@ -1002,7 +1277,7 @@ int main(int argc, char **argv)
   });
 
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), &camera_bridge, lidar_config, lidar_publisher.get(), odometry_config, odometry_publisher.get(), clock_publisher, static_tf_broadcaster);  // start simulation UI loop (blocking call)
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str(), param::config.camera_enabled ? &camera_bridge : nullptr, lidar_config, lidar_publisher.get(), odometry_config, odometry_publisher.get(), clock_publisher, static_tf_broadcaster);  // start simulation UI loop (blocking call)
   keyboard_simulation_mutex = &sim->mtx;
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_, user_key_cb);
   
@@ -1013,7 +1288,7 @@ int main(int argc, char **argv)
 
   sim->exitrequest.store(1);
 
-  camera_bridge.Stop();
+  if (param::config.camera_enabled) camera_bridge.Stop();
   std::cerr << "[Shutdown] Camera bridge stopped." << std::endl;
 
   if (physicsthreadhandle.joinable()) {
@@ -1024,6 +1299,9 @@ int main(int argc, char **argv)
     unitree_thread.join();
   }
 
+  if (kinematic_thread.joinable()) {
+    kinematic_thread.join();
+  }
   if (ros_shutdown_thread.joinable()) {
     ros_shutdown_thread.join();
   }
@@ -1033,7 +1311,7 @@ int main(int argc, char **argv)
   std::cerr << "[Shutdown] ROS shutdown thread joined." << std::endl;
 
   std::cerr << "[Shutdown] Unbinding camera bridge..." << std::endl;
-  camera_bridge.Unbind();
+  if (param::config.camera_enabled) camera_bridge.Unbind();
   std::cerr << "[Shutdown] Camera bridge unbound." << std::endl;
 
   std::cerr << "[Shutdown] Destroying LiDAR publisher and node..." << std::endl;

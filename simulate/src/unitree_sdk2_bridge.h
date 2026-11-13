@@ -14,15 +14,31 @@
 
 #include "param.h"
 #include "physics_joystick.h"
+#include <type_traits>
 
 #define MOTOR_SENSOR_NUM 3
 
 // Set once a controller sends a lowcmd with any non-zero kp, kd or tau; cleared on reset.
 inline std::atomic<bool> lowcmd_active{false};
 
+class UnitreeSDK2BridgeBase;
+// The bridge the physics thread drives (set by UnitreeSdk2BridgeThread).
+inline std::atomic<UnitreeSDK2BridgeBase*> active_bridge{nullptr};
+
 class UnitreeSDK2BridgeBase
 {
 public:
+    // Called by the physics thread with the simulation mutex held.
+    // Joint torques of the motors' PD law from the latest lowcmd and the current state, every step.
+    virtual void ApplyCommand() {}
+    // Publishes rt/lowstate from the current state (lockstep: after every step).
+    virtual void PublishState() {}
+    // Tick (lowstate) of the state the latest lowcmd was computed from.
+    virtual uint32_t CommandTick() { return 0; }
+    // Tick of the state published last (lockstep), and that state sent again unchanged.
+    virtual uint32_t StateTick() { return 0; }
+    virtual void RepublishState() {}
+
     UnitreeSDK2BridgeBase(mjModel *model, mjData *data)
     : mj_model_(model), mj_data_(data)
     {
@@ -185,63 +201,110 @@ public:
         thread_.reset();
     }
 
+    void ApplyCommand() override
+    {
+        if(!mj_data_) return;
+        std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+        bool active = false;
+        for(int i(0); i<num_motor_; i++) {
+            auto & m = lowcmd->msg_.motor_cmd()[i];
+            mj_data_->ctrl[i] = m.tau() +
+                                m.kp() * (m.q() - mj_data_->sensordata[i]) +
+                                m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+            active = active || m.kp() != 0 || m.kd() != 0 || m.tau() != 0;
+        }
+        if(active) { lowcmd_active.store(true); }
+    }
+
+    uint32_t CommandTick() override
+    {
+        if constexpr (std::is_same_v<LowCmd_t, unitree::robot::g1::subscription::LowCmd>) {
+            std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+            return lowcmd->msg_.reserve()[0];
+        }
+        return 0;
+    }
+
+    void PublishState() override
+    {
+        if(!mj_data_) return;
+        if(param::config.lockstep == 1) {
+            // Written directly: RealTimePublisher sends at most once per millisecond from its thread and
+            // drops a state while the last one is unsent, and the controller must see every step.
+            if(!lowstate_direct_) {
+                lowstate_direct_ = std::make_shared<unitree::robot::ChannelPublisher<typename LowState_t::MsgType>>("rt/lowstate");
+                lowstate_direct_->InitChannel();
+                lowstate->lock();
+                state_msg_ = lowstate->msg_;
+                lowstate->unlock();
+            }
+            FillState(state_msg_);
+            lowstate_direct_->Write(state_msg_, 0);
+            state_tick_ = state_msg_.tick();
+            return;
+        }
+        if(lowstate->trylock()) {
+            FillState(lowstate->msg_);
+            lowstate->unlockAndPublish();
+        }
+    }
+
+    uint32_t StateTick() override { return state_tick_; }
+
+    void RepublishState() override
+    {
+        if(lowstate_direct_) { lowstate_direct_->Write(state_msg_, 0); }
+    }
+
+    template <typename Msg>
+    void FillState(Msg & msg)
+    {
+        {
+            for(int i(0); i<num_motor_; i++) {
+                msg.motor_state()[i].q() = mj_data_->sensordata[i];
+                msg.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
+                msg.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
+            }
+            
+            if(imu_quat_adr_ >= 0) {
+                msg.imu_state().quaternion()[0] = mj_data_->sensordata[imu_quat_adr_ + 0];
+                msg.imu_state().quaternion()[1] = mj_data_->sensordata[imu_quat_adr_ + 1];
+                msg.imu_state().quaternion()[2] = mj_data_->sensordata[imu_quat_adr_ + 2];
+                msg.imu_state().quaternion()[3] = mj_data_->sensordata[imu_quat_adr_ + 3];
+
+                double w = msg.imu_state().quaternion()[0];
+                double x = msg.imu_state().quaternion()[1];
+                double y = msg.imu_state().quaternion()[2];
+                double z = msg.imu_state().quaternion()[3];
+
+                msg.imu_state().rpy()[0] = atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+                msg.imu_state().rpy()[1] = asin(2 * (w * y - z * x));
+                msg.imu_state().rpy()[2] = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+            }
+            
+            if(imu_gyro_adr_ >= 0) {
+                msg.imu_state().gyroscope()[0] = mj_data_->sensordata[imu_gyro_adr_ + 0];
+                msg.imu_state().gyroscope()[1] = mj_data_->sensordata[imu_gyro_adr_ + 1];
+                msg.imu_state().gyroscope()[2] = mj_data_->sensordata[imu_gyro_adr_ + 2];
+            }
+
+            if(imu_acc_adr_ >= 0) {
+                msg.imu_state().accelerometer()[0] = mj_data_->sensordata[imu_acc_adr_ + 0];
+                msg.imu_state().accelerometer()[1] = mj_data_->sensordata[imu_acc_adr_ + 1];
+                msg.imu_state().accelerometer()[2] = mj_data_->sensordata[imu_acc_adr_ + 2];
+            }
+            
+            msg.tick() = std::round(mj_data_->time / 1e-3);
+        }
+    }
+
     virtual void run()
     {
         if(!mj_data_) return;
         if(lowstate->joystick) { lowstate->joystick->update(); }
-        // lowcmd
-        {
-            std::lock_guard<std::mutex> lock(lowcmd->mutex_);
-            bool active = false;
-            for(int i(0); i<num_motor_; i++) {
-                auto & m = lowcmd->msg_.motor_cmd()[i];
-                mj_data_->ctrl[i] = m.tau() +
-                                    m.kp() * (m.q() - mj_data_->sensordata[i]) +
-                                    m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
-                active = active || m.kp() != 0 || m.kd() != 0 || m.tau() != 0;
-            }
-            if(active) { lowcmd_active.store(true); }
-        }
-
-        // lowstate
-        if(lowstate->trylock()) {
-            for(int i(0); i<num_motor_; i++) {
-                lowstate->msg_.motor_state()[i].q() = mj_data_->sensordata[i];
-                lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
-                lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
-            }
-            
-            if(imu_quat_adr_ >= 0) {
-                lowstate->msg_.imu_state().quaternion()[0] = mj_data_->sensordata[imu_quat_adr_ + 0];
-                lowstate->msg_.imu_state().quaternion()[1] = mj_data_->sensordata[imu_quat_adr_ + 1];
-                lowstate->msg_.imu_state().quaternion()[2] = mj_data_->sensordata[imu_quat_adr_ + 2];
-                lowstate->msg_.imu_state().quaternion()[3] = mj_data_->sensordata[imu_quat_adr_ + 3];
-
-                double w = lowstate->msg_.imu_state().quaternion()[0];
-                double x = lowstate->msg_.imu_state().quaternion()[1];
-                double y = lowstate->msg_.imu_state().quaternion()[2];
-                double z = lowstate->msg_.imu_state().quaternion()[3];
-
-                lowstate->msg_.imu_state().rpy()[0] = atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
-                lowstate->msg_.imu_state().rpy()[1] = asin(2 * (w * y - z * x));
-                lowstate->msg_.imu_state().rpy()[2] = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
-            }
-            
-            if(imu_gyro_adr_ >= 0) {
-                lowstate->msg_.imu_state().gyroscope()[0] = mj_data_->sensordata[imu_gyro_adr_ + 0];
-                lowstate->msg_.imu_state().gyroscope()[1] = mj_data_->sensordata[imu_gyro_adr_ + 1];
-                lowstate->msg_.imu_state().gyroscope()[2] = mj_data_->sensordata[imu_gyro_adr_ + 2];
-            }
-
-            if(imu_acc_adr_ >= 0) {
-                lowstate->msg_.imu_state().accelerometer()[0] = mj_data_->sensordata[imu_acc_adr_ + 0];
-                lowstate->msg_.imu_state().accelerometer()[1] = mj_data_->sensordata[imu_acc_adr_ + 1];
-                lowstate->msg_.imu_state().accelerometer()[2] = mj_data_->sensordata[imu_acc_adr_ + 2];
-            }
-            
-            lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
-            lowstate->unlockAndPublish();
-        }
+        // The PD law runs in the physics step (ApplyCommand); in lockstep the physics thread also
+        // publishes the low state, right after each step.
+        if(param::config.lockstep != 1) { PublishState(); }
         // highstate
         if(highstate->trylock()) {
             if(frame_pos_adr_ >= 0) {
@@ -266,6 +329,9 @@ public:
     std::unique_ptr<WirelessController_t> wireless_controller;
     std::shared_ptr<LowCmd_t> lowcmd;
     std::unique_ptr<LowState_t> lowstate;
+    std::shared_ptr<unitree::robot::ChannelPublisher<typename LowState_t::MsgType>> lowstate_direct_;
+    typename LowState_t::MsgType state_msg_{};
+    std::atomic<uint32_t> state_tick_{0};
     
 private:
     unitree::common::RecurrentThreadPtr thread_;

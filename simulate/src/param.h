@@ -64,6 +64,21 @@ inline struct SimulationConfig
 
     int hold_until_lowcmd = 0;
 
+    // 1: step only once the controller answered the last state (lowcmd reserve[0] = lowstate tick),
+    // so a stall slows the simulation down instead of letting it catch up on stale commands.
+    int lockstep = 0;
+    // Keyframe the model starts from and BACKSPACE resets to ("" = the model's qpos0).
+    std::string keyframe;
+    // The head RealSense (RGB-D rendering at 30 Hz under the simulation mutex).
+    bool camera_enabled = true;
+
+    // Kinematic base: the pelvis welded to the mocap body kinematic_base_body, which follows the velocity
+    // on kinematic_base_topic (geometry_msgs/Twist, robot frame) instead of a walking policy.
+    bool kinematic_base_enabled = false;
+    std::string kinematic_base_body = "base_target";
+    std::string kinematic_base_topic = "/cmd_vel";
+    double kinematic_base_timeout = 0.5;
+
     bool lidar_enabled = false;
     std::string lidar_site_name = "lidar_site";
     std::string lidar_frame_id = "lidar_frame";
@@ -108,6 +123,26 @@ inline struct SimulationConfig
             if (cfg["hold_until_lowcmd"])
             {
                 hold_until_lowcmd = cfg["hold_until_lowcmd"].as<int>();
+            }
+            if (cfg["lockstep"])
+            {
+                lockstep = cfg["lockstep"].as<int>();
+            }
+            if (cfg["keyframe"])
+            {
+                keyframe = cfg["keyframe"].as<std::string>();
+            }
+            if (cfg["camera"] && cfg["camera"]["enabled"])
+            {
+                camera_enabled = cfg["camera"]["enabled"].as<bool>();
+            }
+            if (cfg["kinematic_base"])
+            {
+                const auto kb = cfg["kinematic_base"];
+                if (kb["enabled"]) kinematic_base_enabled = kb["enabled"].as<bool>();
+                if (kb["body"]) kinematic_base_body = kb["body"].as<std::string>();
+                if (kb["topic"]) kinematic_base_topic = kb["topic"].as<std::string>();
+                if (kb["timeout"]) kinematic_base_timeout = kb["timeout"].as<double>();
             }
 
             if (cfg["lidar"])

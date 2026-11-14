@@ -237,4 +237,13 @@
 
     
   </worldbody>
+
+  <!-- Feet welded to the floor where they start (qpos0): the robot never steps in exercise 1, while the gait policy
+       here yawed the left foot 1-3 deg on the floor at every waist turn with the arms out (the cubes held in its
+       frame moved 2.5 cm). The pelvis stays free and leans as the legs balance; welded too it made the solver
+       too slow. -->
+  <equality>
+    <weld name="left_foot" body1="left_ankle_roll_link" solref="0.004 1" solimp="0.95 0.99 0.001"/>
+    <weld name="right_foot" body1="right_ankle_roll_link" solref="0.004 1" solimp="0.95 0.99 0.001"/>
+  </equality>
 </mujoco>

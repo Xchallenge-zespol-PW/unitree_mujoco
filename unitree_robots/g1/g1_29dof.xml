@@ -61,9 +61,9 @@
   </asset>
 
   <worldbody>
-    <!-- Task 1 start: after its release the policy lands the robot about (-0.028, -0.045) m and +13.2 deg off,
-         so it starts turned and offset to stand facing the table with the pelvis 12 cm from its edge. -->
-    <body name="pelvis" pos="0.0374 -3.6175 0.8" quat="0.621148 0 0 -0.783693">
+    <!-- Task 1 start: facing the table, the pelvis 13 cm from its edge, the soles on the floor with straight
+         legs (0.792 m); round1.xml welds the feet there. -->
+    <body name="pelvis" pos="0 -3.57 0.792" quat="0.7071068 0 0 -0.7071068">
       <site name="imu" size="0.01" pos="0.0 0.0 0.0" />
       <inertial pos="0 0 -0.07605" quat="1 0 -0.000399148 0" mass="3.813"
         diaginertia="0.010549 0.0093089 0.0079184" />
